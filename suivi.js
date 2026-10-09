@@ -38,7 +38,7 @@
   }
   function syncLabel(message) {
     const count = Object.keys(outbox).length;
-    $('sync-status').textContent = message || (online ? count ? count + ' changement(s) en attente de synchronisation.' : 'Synchronisé · sauvegardé sur le serveur.' : count ? count + ' changement(s) conservé(s) sur cet appareil. Connecte-toi pour les synchroniser.' : 'Mode local · connecte-toi pour retrouver ton suivi sur téléphone.');
+    $('sync-status').textContent = message || (online ? count ? count + ' changement(s) en attente de synchronisation.' : 'Synchronisé · sauvegardé sur le serveur.' : count ? count + ' changement(s) conservé(s) sur cet appareil. Connecte-toi pour les synchroniser.' : initial.length ? 'Mode local · connecte-toi pour retrouver ton suivi sur téléphone.' : 'Connecte-toi pour charger tes entreprises, tes statuts et tes documents.');
     $('connect').textContent = auth ? 'Déconnexion' : 'Se connecter';
   }
   const labels = { cv: 'CV (PDF)', letter: 'Anschreiben (PDF)', bundle: 'Dossier complet (PDF)', transcript: 'Leistungsübersicht (PDF)', enrollment: 'Studienbescheinigung (PDF)' };
@@ -94,7 +94,9 @@
       if (!list.length) $(name + '-list').append(node('p', 'empty', applications.length ? 'Aucune candidature dans cette liste avec ces filtres.' : 'Connecte-toi pour charger tes entreprises et tes documents.'));
       $(name + '-count').textContent = list.length; $(name + '-total').textContent = applications.filter(a => name === 'sent' ? a.status === 'applied' : name === 'pending' ? a.status === 'pending' : ['unknown', 'archived'].includes(a.status)).length;
     }
-    $('overview').textContent = new Set(applications.map(a => normalize(a.company))).size + ' entreprises · ' + applications.length + ' fiches conservées'; syncLabel();
+    $('overview').textContent = applications.length ? new Set(applications.map(a => normalize(a.company))).size + ' entreprises · ' + applications.length + ' fiches conservées' : 'Ton suivi apparaît après connexion.';
+    if (!applications.length) for (const name of ['sent', 'pending', 'history']) { $(name + '-count').textContent = '—'; $(name + '-total').textContent = '—'; }
+    syncLabel();
   }
   async function request(path = '', options = {}) {
     const headers = { ...(options.headers || {}) }; if (auth) headers.Authorization = auth;
@@ -129,7 +131,7 @@
         if (result.application) { applications = applications.map(a => a.id === id ? result.application : a); delete outbox[id]; persist(); render(); }
       }
       $('login-form').hidden = true; $('login-error').textContent = ''; syncLabel();
-    } catch (error) { online = false; syncLabel(error.message + ' Les changements locaux restent conservés.'); $('login-error').textContent = error.message; persist(); }
+    } catch (error) { online = false; syncLabel(error.message + ' Les changements locaux restent conservés.'); $('login-error').textContent = error.message; if (!applications.length) $('login-form').hidden = false; persist(); }
     finally { busy = false; }
   }
   async function changeState(app, status) {
@@ -148,7 +150,7 @@
     return new File([await response.blob()], doc.filename, { type: doc.contentType || 'application/pdf' });
   }
   async function downloadDocument(app, kind) {
-    if (!auth && app.folder) { const doc = documents(app).find(d => d.kind === kind); if (doc) { const a = node('a'); a.href = '../' + encodeURIComponent(app.folder) + '/' + encodeURIComponent(doc.filename); a.download = doc.filename; document.body.append(a); a.click(); a.remove(); return; } }
+    if (!auth && initial.length && app.folder) { const doc = documents(app).find(d => d.kind === kind); if (doc) { const a = node('a'); a.href = doc.isGeneral ? './Lebenslauf%20jordan.pdf' : '../' + encodeURIComponent(app.folder) + '/' + encodeURIComponent(doc.filename); a.download = doc.filename; document.body.append(a); a.click(); a.remove(); return; } }
     if (!auth) throw new Error('Connecte-toi pour télécharger les documents depuis ton téléphone.');
     const file = await getDocument(app, kind); downloadBlob(file, file.name);
   }
@@ -194,5 +196,5 @@
   window.addEventListener('online', synchronize);
   document.addEventListener('visibilitychange', () => { if (!document.hidden && auth) synchronize(); });
   setInterval(() => { if (!document.hidden && auth) synchronize(); }, 60000);
-  overlayOutbox(); render(); if (auth) synchronize();
+  overlayOutbox(); render(); if (!initial.length && !auth) $('login-form').hidden = false; if (auth) synchronize();
 })();
