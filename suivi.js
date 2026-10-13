@@ -164,14 +164,48 @@
     return { subject: app.mailSubject || 'Initiativbewerbung als Werkstudent / Praktikant Softwareentwicklung / IT – Jordan Freddy', body: app.mailBody || 'Sehr geehrte Damen und Herren,\n\nich bewerbe mich initiativ bei ' + app.company + ' als Werkstudent oder Praktikant im Bereich Softwareentwicklung / IT. Ich studiere Bachelor Informatik an der Technischen Hochschule Mittelhessen in Gießen. In meinen Projekten arbeite ich mit Next.js, TypeScript, Java, REST-Schnittstellen und Datenbanken.\n\nIm Anhang finden Sie meinen Lebenslauf. Über eine Rückmeldung und ein Kennenlernen freue ich mich.\n\nMit freundlichen Grüßen\nJordan Freddy' };
   }
   async function openApplication(app) {
-    dialogItem = app; sharedFiles = []; const draft = emailDraft(app); $('dialog-title').textContent = app.company; $('dialog-role').textContent = app.role; $('mail-to').value = app.email || ''; $('mail-subject').value = draft.subject; $('mail-body').value = draft.body; $('dialog-documents').replaceChildren(docButtons(app)); $('portal-action').replaceChildren();
-    if (app.url) { const a = link(app.email ? 'Voir aussi le site / formulaire ↗' : 'Ouvrir le site / formulaire pour postuler ↗', app.url); a.className = 'button primary'; $('portal-action').append(a); }
-    $('document-note').textContent = documents(app).some(d => d.kind === 'letter') ? 'Documents préparés dans ton dossier.' : 'CV général disponible ; lettre adaptée à préparer. Vérifie les pièces demandées avant l’envoi.';
-    $('dialog-feedback').textContent = ''; $('share-files').disabled = true; $('application-dialog').showModal();
+    dialogItem = app; sharedFiles = []; const draft = emailDraft(app);
+    $('dialog-title').textContent = app.company; $('dialog-role').textContent = app.role;
+    $('mail-to').value = app.email || ''; $('mail-subject').value = draft.subject; $('mail-body').value = draft.body;
+    $('dialog-documents').replaceChildren(docButtons(app)); $('portal-action').replaceChildren();
+    if ($('contact-suggestions')) { $('contact-suggestions').replaceChildren(); $('contact-suggestions').hidden = true; }
+    if (app.url) { const a = link(app.email ? 'Voir aussi le site / formulaire ↗' : 'Ouvrir le site / formulaire pour postuler ↗', app.url); a.className = 'button'; $('portal-action').append(a); }
+    const hasLetter = documents(app).some(d => d.kind === 'letter');
+    $('document-note').textContent = hasLetter ? 'Pièces prêtes dans ton dossier : CV et lettre de motivation (Anschreiben).' : 'CV général disponible ; lettre adaptée à préparer. Vérifie les pièces avant l’envoi.';
+    $('dialog-feedback').textContent = '';
+    if ($('send-mail')) { $('send-mail').disabled = false; $('send-mail').textContent = '🚀 Envoyer la candidature (Gmail)'; }
+    $('share-files').disabled = true; $('application-dialog').showModal();
     if (auth) {
+      if (!$('mail-to').value) {
+        $('dialog-feedback').textContent = 'Recherche d’adresse e-mail officielle en cours…';
+        try {
+          const res = await request('/' + encodeURIComponent(app.id) + '/contacts');
+          if (res.ok) {
+            const data = await res.json();
+            if (dialogItem?.id === app.id) {
+              if (data.candidates && data.candidates.length) {
+                $('mail-to').value = data.candidates[0].email;
+                if ($('contact-suggestions')) {
+                  $('contact-suggestions').replaceChildren();
+                  for (const cand of data.candidates) {
+                    const pill = node('button', 'contact-pill', cand.email + (cand.kind === 'recruiting' ? ' (recrutement)' : ''));
+                    pill.type = 'button';
+                    pill.onclick = () => { $('mail-to').value = cand.email; };
+                    $('contact-suggestions').append(pill);
+                  }
+                  $('contact-suggestions').hidden = false;
+                }
+                $('dialog-feedback').textContent = data.message || 'Adresse de contact trouvée sur le site officiel.';
+              } else {
+                $('dialog-feedback').textContent = data.message || 'Aucune adresse e-mail publique trouvée. Postule sur le site ou renseigne une adresse.';
+              }
+            }
+          }
+        } catch { if (dialogItem?.id === app.id) $('dialog-feedback').textContent = ''; }
+      }
       const kinds = documents(app).some(d => d.kind === 'bundle') ? ['bundle'] : documents(app).filter(d => ['cv', 'letter'].includes(d.kind) || d.kind === 'transcript' && app.transcript || d.kind === 'enrollment' && app.enrollment).map(d => d.kind);
       try { const files = await Promise.all(kinds.map(kind => getDocument(app, kind))); if (dialogItem?.id !== app.id) return; sharedFiles = files; $('share-files').disabled = !files.length || !navigator.canShare || !navigator.canShare({ files }); }
-      catch { $('dialog-feedback').textContent = 'Télécharge les pièces individuellement si le partage n’est pas disponible.'; }
+      catch { /* Ignore document download preview errors */ }
     }
   }
   document.addEventListener('click', async event => {
@@ -190,6 +224,72 @@
   $('login-form').addEventListener('submit', async event => { event.preventDefault(); auth = 'Basic ' + btoa(unescape(encodeURIComponent($('username').value + ':' + $('password').value))); try { sessionStorage.setItem(AUTH, JSON.stringify(auth)); } catch {} $('password').value = ''; await synchronize(); });
   $('refresh').addEventListener('click', () => { if (!auth) { $('login-form').hidden = false; $('password').focus(); } else synchronize(); });
   $('close-dialog').addEventListener('click', () => { $('application-dialog').close(); dialogItem = null; });
+  $('send-mail')?.addEventListener('click', async () => {
+    if (!dialogItem) return;
+    if (!auth) {
+      $('dialog-feedback').textContent = 'Connecte-toi à ton suivi pour envoyer la candidature.';
+      $('login-form').hidden = false;
+      $('password').focus();
+      return;
+    }
+    const to = $('mail-to').value.trim();
+    if (!to || !$('mail-to').checkValidity()) {
+      $('mail-to').focus();
+      $('dialog-feedback').textContent = 'Renseigne une adresse e-mail valide pour le destinataire.';
+      return;
+    }
+    const subject = $('mail-subject').value.trim();
+    const body = $('mail-body').value.trim();
+    if (!subject || !body) {
+      $('dialog-feedback').textContent = 'L’objet et le corps de l’e-mail ne peuvent pas être vides.';
+      return;
+    }
+    const sendBtn = $('send-mail');
+    sendBtn.disabled = true;
+    sendBtn.textContent = 'Vérification…';
+    $('dialog-feedback').textContent = 'Vérification du dossier et des pièces jointes…';
+    try {
+      const reviewRes = await request('/' + encodeURIComponent(dialogItem.id) + '/review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to, subject, body })
+      });
+      const reviewData = await reviewRes.json();
+      if (!reviewRes.ok) throw new Error(reviewData.error || 'Vérification impossible.');
+      if (!reviewData.enabled) throw new Error(reviewData.reason || 'L’envoi Gmail n’est pas disponible.');
+
+      sendBtn.textContent = 'Envoi Gmail en cours…';
+      $('dialog-feedback').textContent = 'Envoi via ' + reviewData.sender + ' avec ' + reviewData.attachments.length + ' pièce(s) jointe(s)…';
+
+      const sendRes = await request('/' + encodeURIComponent(dialogItem.id) + '/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmed: true, token: reviewData.token })
+      });
+      const sendData = await sendRes.json();
+      if (!sendRes.ok) throw new Error(sendData.error || 'Erreur lors de l’envoi.');
+
+      sendBtn.textContent = '✓ Envoyé !';
+      $('dialog-feedback').textContent = '✓ Candidature envoyée avec succès à ' + to + ' ! Pièces : ' + (reviewData.attachments.map(a => a.filename).join(', ')) + '. Fiche marquée « Postulé ».';
+
+      const updated = sendData.application || { ...dialogItem, status: 'applied', sentAt: today(), revision: (dialogItem.revision || 0) + 1 };
+      applications = applications.map(a => a.id === dialogItem.id ? updated : a);
+      delete outbox[dialogItem.id];
+      persist();
+      render();
+      notify('✓ Candidature envoyée à ' + dialogItem.company + ' et marquée « Postulé » !');
+      setTimeout(() => {
+        if (dialogItem?.id === updated.id) {
+          $('application-dialog').close();
+          dialogItem = null;
+        }
+      }, 2500);
+    } catch (error) {
+      sendBtn.disabled = false;
+      sendBtn.textContent = '🚀 Réessayer l’envoi';
+      $('dialog-feedback').textContent = error.message;
+    }
+  });
   $('copy-mail').addEventListener('click', async () => { try { await navigator.clipboard.writeText('An: ' + $('mail-to').value + '\nBetreff: ' + $('mail-subject').value + '\n\n' + $('mail-body').value); $('dialog-feedback').textContent = 'E-mail copié.'; } catch { $('mail-body').select(); $('dialog-feedback').textContent = 'Sélectionne et copie le texte.'; } });
   $('open-mail').addEventListener('click', () => { if (!$('mail-to').value || !$('mail-to').checkValidity()) { $('mail-to').focus(); $('dialog-feedback').textContent = 'Renseigne l’adresse du destinataire ou utilise le formulaire de l’entreprise.'; return; } location.href = 'mailto:' + encodeURIComponent($('mail-to').value) + '?subject=' + encodeURIComponent($('mail-subject').value) + '&body=' + encodeURIComponent($('mail-body').value); });
   $('download-eml').addEventListener('click', async () => { if (!auth) { $('dialog-feedback').textContent = 'Connecte-toi pour télécharger l’e-mail avec les pièces jointes.'; return; } try { const response = await request('/' + encodeURIComponent(dialogItem.id) + '/email.eml', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: $('mail-to').value, subject: $('mail-subject').value, body: $('mail-body').value }) }); if (!response.ok) throw new Error('Brouillon indisponible.'); downloadBlob(await response.blob(), 'Bewerbung-' + dialogItem.id + '.eml'); $('dialog-feedback').textContent = 'Brouillon téléchargé avec ton texte et les pièces disponibles. Vérifie-le dans ton application mail avant l’envoi.'; } catch (error) { $('dialog-feedback').textContent = error.message; } });
