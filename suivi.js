@@ -86,16 +86,16 @@
   function render() {
     const q = normalize($('search').value), region = $('region').value, type = $('opportunity').value;
     const visible = applications.filter(a => (!q || normalize([a.company, a.role, a.location, a.sector].join(' ')).includes(q)) && (!region || a.region === region || region === 'Historique' && a.historical) && (!type || type === 'historical' ? !type || a.historical : a.opportunityType === type));
-    const groups = { sent: visible.filter(a => a.status === 'applied'), pending: visible.filter(a => a.status === 'pending'), history: visible.filter(a => ['unknown', 'archived'].includes(a.status)) };
+    const groups = { sent: visible.filter(a => a.status === 'applied'), pending: visible.filter(a => a.status !== 'applied') };
     groups.sent.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
     groups.pending.sort((a, b) => (a.opportunityType === 'open-role' ? 0 : 1) - (b.opportunityType === 'open-role' ? 0 : 1) || (b.addedAt || '').localeCompare(a.addedAt || '') || a.company.localeCompare(b.company));
     for (const [name, list] of Object.entries(groups)) {
       $('' + name + '-list').replaceChildren(...list.map(card));
       if (!list.length) $(name + '-list').append(node('p', 'empty', applications.length ? 'Aucune candidature dans cette liste avec ces filtres.' : 'Connecte-toi pour charger tes entreprises et tes documents.'));
-      $(name + '-count').textContent = list.length; $(name + '-total').textContent = applications.filter(a => name === 'sent' ? a.status === 'applied' : name === 'pending' ? a.status === 'pending' : ['unknown', 'archived'].includes(a.status)).length;
+      $(name + '-count').textContent = list.length; $(name + '-total').textContent = applications.filter(a => name === 'sent' ? a.status === 'applied' : a.status !== 'applied').length;
     }
     $('overview').textContent = applications.length ? new Set(applications.map(a => normalize(a.company))).size + ' entreprises · ' + applications.length + ' fiches conservées' : 'Ton suivi apparaît après connexion.';
-    if (!applications.length) for (const name of ['sent', 'pending', 'history']) { $(name + '-count').textContent = '—'; $(name + '-total').textContent = '—'; }
+    if (!applications.length) for (const name of ['sent', 'pending']) { $(name + '-count').textContent = '—'; $(name + '-total').textContent = '—'; }
     syncLabel();
   }
   async function request(path = '', options = {}) {
