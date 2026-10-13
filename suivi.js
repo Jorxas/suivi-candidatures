@@ -88,7 +88,7 @@
   }
   function render() {
     $('sent-section').hidden = hideApplied;
-    $('toggle-applied').textContent = hideApplied ? 'Afficher les postulées' : 'Masquer les postulées';
+    $('toggle-applied').textContent = hideApplied ? 'Afficher les entreprises déjà postulées' : 'Masquer toutes les entreprises déjà postulées';
     $('toggle-applied').setAttribute('aria-expanded', String(!hideApplied));
     const q = normalize($('search').value), region = $('region').value, type = $('opportunity').value;
     const visible = applications.filter(a => (!q || normalize([a.company, a.role, a.location, a.sector].join(' ')).includes(q)) && (!region || a.region === region || region === 'Historique' && a.historical) && (!type || type === 'historical' ? !type || a.historical : a.opportunityType === type));
