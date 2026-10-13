@@ -45,12 +45,23 @@
     $('connect').textContent = auth ? 'Déconnexion' : 'Se connecter';
   }
   const labels = { cv: 'CV (PDF)', letter: 'Anschreiben (PDF)', bundle: 'Dossier complet (PDF)', transcript: 'Leistungsübersicht (PDF)', enrollment: 'Studienbescheinigung (PDF)' };
+  function cleanDocName(name, kind) {
+    if (!name) return kind === 'cv' ? 'Lebenslauf_Jordan_Freddy.pdf' : kind === 'letter' ? 'Anschreiben_Jordan_Freddy.pdf' : 'Dokument.pdf';
+    let clean = name.replace(/[-_]?(?:personalisiert|personnalis[eé]|tailored)/gi, '');
+    if (kind === 'cv' && (clean === 'Lebenslauf.pdf' || !clean.toLowerCase().includes('lebenslauf'))) clean = 'Lebenslauf_Jordan_Freddy.pdf';
+    if (kind === 'letter' && (clean === 'Anschreiben.pdf' || !clean.toLowerCase().includes('anschreiben'))) clean = 'Anschreiben_Jordan_Freddy.pdf';
+    return clean || name;
+  }
+  function cleanMailText(text) {
+    if (!text) return text;
+    return text.replace(/Meinen\s+auf\s+diese\s+Bewerbung\s+zugeschnittenen\s+Lebenslauf\s+und\s+mein\s+Anschreiben/gi, 'Meinen Lebenslauf und mein Anschreiben');
+  }
   function documents(app) {
-    if (Array.isArray(app.documents)) return app.documents;
+    if (Array.isArray(app.documents)) return app.documents.map(d => ({ ...d, filename: cleanDocName(d.filename, d.kind) }));
     const docs = [];
     if (app.folder) {
-      if (app.cv !== false) docs.push({ kind: 'cv', filename: app.cvFile || 'Lebenslauf.pdf' });
-      if (app.letter !== false) docs.push({ kind: 'letter', filename: app.letterFile || 'Anschreiben.pdf' });
+      if (app.cv !== false) docs.push({ kind: 'cv', filename: cleanDocName(app.cvFile, 'cv') });
+      if (app.letter !== false) docs.push({ kind: 'letter', filename: cleanDocName(app.letterFile, 'letter') });
       if (app.bundle) docs.push({ kind: 'bundle', filename: app.bundle });
       if (app.transcript) docs.push({ kind: 'transcript', filename: 'Leistungsuebersicht.pdf' });
     }
@@ -153,15 +164,26 @@
   async function getDocument(app, kind) {
     const doc = documents(app).find(d => d.kind === kind); if (!doc) throw new Error('Ce document n’est pas encore préparé.');
     const response = await request('/' + encodeURIComponent(app.id) + '/documents/' + kind); if (!response.ok) throw new Error('Document indisponible. Connecte-toi ou actualise le suivi.');
-    return new File([await response.blob()], doc.filename, { type: doc.contentType || 'application/pdf' });
+    const filename = cleanDocName(doc.filename, kind);
+    return new File([await response.blob()], filename, { type: doc.contentType || 'application/pdf' });
   }
   async function downloadDocument(app, kind) {
-    if (!auth && initial.length && app.folder) { const doc = documents(app).find(d => d.kind === kind); if (doc) { const a = node('a'); a.href = doc.isGeneral ? './Lebenslauf%20jordan.pdf' : '../' + encodeURIComponent(app.folder) + '/' + encodeURIComponent(doc.filename); a.download = doc.filename; document.body.append(a); a.click(); a.remove(); return; } }
+    if (!auth && initial.length && app.folder) {
+      const doc = documents(app).find(d => d.kind === kind);
+      if (doc) {
+        const a = node('a');
+        const filename = cleanDocName(doc.filename, kind);
+        a.href = doc.isGeneral ? './Lebenslauf%20jordan.pdf' : '../' + encodeURIComponent(app.folder) + '/' + encodeURIComponent(filename);
+        a.download = filename;
+        document.body.append(a); a.click(); a.remove(); return;
+      }
+    }
     if (!auth) throw new Error('Connecte-toi pour télécharger les documents depuis ton téléphone.');
     const file = await getDocument(app, kind); downloadBlob(file, file.name);
   }
   function emailDraft(app) {
-    return { subject: app.mailSubject || 'Initiativbewerbung als Werkstudent / Praktikant Softwareentwicklung / IT – Jordan Freddy', body: app.mailBody || 'Sehr geehrte Damen und Herren,\n\nich bewerbe mich initiativ bei ' + app.company + ' als Werkstudent oder Praktikant im Bereich Softwareentwicklung / IT. Ich studiere Bachelor Informatik an der Technischen Hochschule Mittelhessen in Gießen. In meinen Projekten arbeite ich mit Next.js, TypeScript, Java, REST-Schnittstellen und Datenbanken.\n\nIm Anhang finden Sie meinen Lebenslauf. Über eine Rückmeldung und ein Kennenlernen freue ich mich.\n\nMit freundlichen Grüßen\nJordan Freddy' };
+    const rawBody = app.mailBody || 'Sehr geehrte Damen und Herren,\n\nich bewerbe mich initiativ bei ' + app.company + ' als Werkstudent oder Praktikant im Bereich Softwareentwicklung / IT. Ich studiere Bachelor Informatik an der Technischen Hochschule Mittelhessen in Gießen. In meinen Projekten arbeite ich mit Next.js, TypeScript, Java, REST-Schnittstellen und Datenbanken.\n\nIm Anhang finden Sie meinen Lebenslauf. Über eine Rückmeldung und ein Kennenlernen freue ich mich.\n\nMit freundlichen Grüßen\nJordan Freddy';
+    return { subject: app.mailSubject || 'Initiativbewerbung als Werkstudent / Praktikant Softwareentwicklung / IT – Jordan Freddy', body: cleanMailText(rawBody) };
   }
   async function openApplication(app) {
     dialogItem = app; sharedFiles = []; const draft = emailDraft(app);
