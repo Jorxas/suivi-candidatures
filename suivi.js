@@ -6,6 +6,8 @@
   const initial = JSON.parse($('applications-data').textContent || '[]');
   const dateFormat = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
   const read = (store, key, fallback) => { try { return JSON.parse(store.getItem(key)) || fallback; } catch { return fallback; } };
+  const VIEW = 'jordan-tracker-hide-applied-v1';
+  let hideApplied = read(localStorage, VIEW, false) === true;
   let applications = initial.map(a => ({ ...a, status: a.status || (a.sentAt ? 'applied' : 'pending'), revision: a.revision || 0 }));
   const cached = read(localStorage, CACHE, { applications: [] });
   applications = [...new Map([...applications, ...(Array.isArray(cached.applications) ? cached.applications : [])].map(a => [a.id, a])).values()];
@@ -84,11 +86,14 @@
     article.append(info, actions); return article;
   }
   function render() {
+    $('sent-section').hidden = hideApplied;
+    $('toggle-applied').textContent = hideApplied ? 'Afficher les postulées' : 'Masquer les postulées';
+    $('toggle-applied').setAttribute('aria-expanded', String(!hideApplied));
     const q = normalize($('search').value), region = $('region').value, type = $('opportunity').value;
     const visible = applications.filter(a => (!q || normalize([a.company, a.role, a.location, a.sector].join(' ')).includes(q)) && (!region || a.region === region || region === 'Historique' && a.historical) && (!type || type === 'historical' ? !type || a.historical : a.opportunityType === type));
     const groups = { sent: visible.filter(a => a.status === 'applied'), pending: visible.filter(a => a.status !== 'applied') };
-    groups.sent.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
-    groups.pending.sort((a, b) => (a.opportunityType === 'open-role' ? 0 : 1) - (b.opportunityType === 'open-role' ? 0 : 1) || (b.addedAt || '').localeCompare(a.addedAt || '') || a.company.localeCompare(b.company));
+    groups.sent.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || '') || a.company.localeCompare(b.company));
+    groups.pending.sort((a, b) => (b.addedAt || b.verifiedAt || '').localeCompare(a.addedAt || a.verifiedAt || '') || a.company.localeCompare(b.company));
     for (const [name, list] of Object.entries(groups)) {
       $('' + name + '-list').replaceChildren(...list.map(card));
       if (!list.length) $(name + '-list').append(node('p', 'empty', applications.length ? 'Aucune candidature dans cette liste avec ces filtres.' : 'Connecte-toi pour charger tes entreprises et tes documents.'));
@@ -175,6 +180,11 @@
     catch (error) { notify(error.message); }
   });
   for (const id of ['search', 'region', 'opportunity']) $(id).addEventListener('input', render);
+  $('toggle-applied').addEventListener('click', () => {
+    hideApplied = !hideApplied;
+    try { localStorage.setItem(VIEW, JSON.stringify(hideApplied)); } catch {}
+    render();
+  });
   $('connect').addEventListener('click', () => { if (auth) { auth = ''; online = false; sessionStorage.removeItem(AUTH); syncLabel(); } else { $('login-form').hidden = !$('login-form').hidden; if (!$('login-form').hidden) $('password').focus(); } });
   $('login-form').addEventListener('submit', async event => { event.preventDefault(); auth = 'Basic ' + btoa(unescape(encodeURIComponent($('username').value + ':' + $('password').value))); try { sessionStorage.setItem(AUTH, JSON.stringify(auth)); } catch {} $('password').value = ''; await synchronize(); });
   $('refresh').addEventListener('click', () => { if (!auth) { $('login-form').hidden = false; $('password').focus(); } else synchronize(); });
