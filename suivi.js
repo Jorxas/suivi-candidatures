@@ -195,9 +195,9 @@
                   }
                   $('contact-suggestions').hidden = false;
                 }
-                $('dialog-feedback').textContent = data.message || 'Adresse de contact trouvée sur le site officiel.';
+                $('dialog-feedback').textContent = '';
               } else {
-                $('dialog-feedback').textContent = data.message || 'Aucune adresse e-mail publique trouvée. Postule sur le site ou renseigne une adresse.';
+                $('dialog-feedback').textContent = 'Aucune adresse e-mail publique trouvée. Postule sur le site ou renseigne une adresse.';
               }
             }
           }
@@ -269,21 +269,26 @@
       const sendData = await sendRes.json();
       if (!sendRes.ok) throw new Error(sendData.error || 'Erreur lors de l’envoi.');
 
-      sendBtn.textContent = '✓ Envoyé !';
-      $('dialog-feedback').textContent = '✓ Candidature envoyée avec succès à ' + to + ' ! Pièces : ' + (reviewData.attachments.map(a => a.filename).join(', ')) + '. Fiche marquée « Postulé ».';
-
-      const updated = sendData.application || { ...dialogItem, status: 'applied', sentAt: today(), revision: (dialogItem.revision || 0) + 1 };
-      applications = applications.map(a => a.id === dialogItem.id ? updated : a);
-      delete outbox[dialogItem.id];
+      const sentItem = dialogItem;
+      const updated = sendData.application || { ...sentItem, status: 'applied', sentAt: today(), revision: (sentItem.revision || 0) + 1 };
+      applications = applications.map(a => a.id === sentItem.id ? updated : a);
+      delete outbox[sentItem.id];
+      hideApplied = false;
+      try { localStorage.setItem(VIEW, JSON.stringify(false)); } catch {}
       persist();
       render();
-      notify('✓ Candidature envoyée à ' + dialogItem.company + ' et marquée « Postulé » !');
+      notify('✓ Candidature envoyée à ' + sentItem.company + ' et déplacée dans « Postulé » !');
+
+      $('application-dialog').close();
+      dialogItem = null;
+
       setTimeout(() => {
-        if (dialogItem?.id === updated.id) {
-          $('application-dialog').close();
-          dialogItem = null;
+        const cardElem = document.querySelector(`.card[data-id="${sentItem.id}"]`);
+        if (cardElem) {
+          cardElem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          cardElem.classList.add('highlight-sent');
         }
-      }, 2500);
+      }, 150);
     } catch (error) {
       sendBtn.disabled = false;
       sendBtn.textContent = '🚀 Réessayer l’envoi';
