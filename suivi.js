@@ -120,7 +120,13 @@
   async function request(path = '', options = {}) {
     const headers = { ...(options.headers || {}) }; if (auth) headers.Authorization = auth;
     const response = await fetch(API + path, { ...options, headers, cache: 'no-store', signal: AbortSignal.timeout(90000) });
-    if (response.status === 401) throw new Error('Connexion refusée. Vérifie ton identifiant et ton mot de passe.');
+    if (response.status === 401) {
+      auth = ''; online = false;
+      try { sessionStorage.removeItem(AUTH); } catch {}
+      $('login-form').hidden = false;
+      syncLabel();
+      throw new Error('Connexion refusée. Vérifie ton identifiant et ton mot de passe.');
+    }
     return response;
   }
   function overlayOutbox() { for (const app of applications) if (outbox[app.id]) Object.assign(app, { status: outbox[app.id].status, sentAt: outbox[app.id].sentAt }); }
@@ -280,7 +286,7 @@
     render();
   });
   $('connect').addEventListener('click', () => { if (auth) { auth = ''; online = false; sessionStorage.removeItem(AUTH); syncLabel(); } else { $('login-form').hidden = !$('login-form').hidden; if (!$('login-form').hidden) $('password').focus(); } });
-  $('login-form').addEventListener('submit', async event => { event.preventDefault(); auth = 'Basic ' + btoa(unescape(encodeURIComponent($('username').value + ':' + $('password').value))); try { sessionStorage.setItem(AUTH, JSON.stringify(auth)); } catch {} $('password').value = ''; await synchronize(); });
+  $('login-form').addEventListener('submit', async event => { event.preventDefault(); auth = 'Basic ' + btoa(unescape(encodeURIComponent($('username').value.trim() + ':' + $('password').value))); try { sessionStorage.setItem(AUTH, JSON.stringify(auth)); } catch {} $('password').value = ''; await synchronize(); });
   $('refresh').addEventListener('click', () => { if (!auth) { $('login-form').hidden = false; $('password').focus(); } else synchronize(); });
   $('close-dialog').addEventListener('click', () => { if (sending) return; $('application-dialog').close(); dialogItem = null; });
   $('application-dialog').addEventListener('cancel', event => { if (sending) event.preventDefault(); });
