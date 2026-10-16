@@ -13,6 +13,7 @@
   const cached = read(localStorage, CACHE, { applications: [] });
   applications = [...new Map([...applications, ...(Array.isArray(cached.applications) ? cached.applications : [])].map(a => [a.id, a])).values()];
   let outbox = read(localStorage, OUTBOX, {}), auth = read(sessionStorage, AUTH, ''), online = false, busy = false, dialogItem = null, sharedFiles = [], feedbackTimer;
+  let selectedKinds = new Set(), sending = false, selectionVersion = 0;
   // Retain the original browser storage, including IDs outside the old HTML.
   const legacy = {};
   try {
@@ -78,6 +79,7 @@
     if (app.location) info.append(node('p', 'meta', app.location));
     const badge = app.opportunityType === 'open-role' ? 'Offre publiée' : app.opportunityType === 'initiative' ? 'Candidature spontanée' : app.historical ? 'Ancien dossier' : 'Dossier existant';
     info.append(node('span', 'badge' + (app.historical ? ' historical' : ''), badge));
+    if (app.researchNeedsReview) info.append(node('span', 'badge historical', 'Brouillon · employeur à vérifier'));
     if (app.status === 'applied') info.append(node('p', 'meta', app.sentAt ? 'Postulée le ' + dateFormat.format(new Date(app.sentAt + 'T12:00:00')) : 'Déjà postulée · date non renseignée'));
     if (app.status === 'unknown') info.append(node('p', 'meta', 'Envoi à confirmer'));
     if (app.status === 'archived') info.append(node('p', 'meta', 'Archivée · conservée dans le suivi'));
@@ -102,7 +104,7 @@
     $('toggle-applied').setAttribute('title', hideApplied ? 'Afficher les postulées' : 'Masquer les postulées');
     $('toggle-applied').setAttribute('aria-expanded', String(!hideApplied));
     const q = normalize($('search').value), region = $('region').value, type = $('opportunity').value;
-    const visible = applications.filter(a => (!q || normalize([a.company, a.role, a.location, a.sector].join(' ')).includes(q)) && (!region || a.region === region || region === 'Historique' && a.historical) && (!type || type === 'historical' ? !type || a.historical : a.opportunityType === type));
+    const visible = applications.filter(a => (!q || normalize([a.company, a.role, a.location, a.sector].join(' ')).includes(q)) && (!region || a.region === region || region === 'school' && a.schoolList || region === 'Historique' && a.historical) && (!type || type === 'historical' ? !type || a.historical : a.opportunityType === type));
     const groups = { sent: visible.filter(a => a.status === 'applied'), pending: visible.filter(a => a.status !== 'applied') };
     groups.sent.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || '') || a.company.localeCompare(b.company));
     groups.pending.sort((a, b) => (b.addedAt || b.verifiedAt || '').localeCompare(a.addedAt || a.verifiedAt || '') || a.company.localeCompare(b.company));
@@ -185,20 +187,57 @@
     const rawBody = app.mailBody || 'Sehr geehrte Damen und Herren,\n\nich bewerbe mich initiativ bei ' + app.company + ' als Werkstudent oder Praktikant im Bereich Softwareentwicklung / IT. Ich studiere Bachelor Informatik an der Technischen Hochschule Mittelhessen in Gießen. In meinen Projekten arbeite ich mit Next.js, TypeScript, Java, REST-Schnittstellen und Datenbanken.\n\nIm Anhang finden Sie meinen Lebenslauf. Über eine Rückmeldung und ein Kennenlernen freue ich mich.\n\nMit freundlichen Grüßen\nJordan Freddy';
     return { subject: app.mailSubject || 'Initiativbewerbung als Werkstudent / Praktikant Softwareentwicklung / IT – Jordan Freddy', body: cleanMailText(rawBody) };
   }
+  async function refreshSelectedFiles(app) {
+    const version = ++selectionVersion;
+    sharedFiles = []; $('share-files').disabled = true;
+    if (!auth) return;
+    try {
+      const files = await Promise.all([...selectedKinds].map(kind => getDocument(app, kind)));
+      if (dialogItem?.id !== app.id || version !== selectionVersion) return;
+      sharedFiles = files;
+      $('share-files').disabled = !files.length || !navigator.canShare || !navigator.canShare({ files });
+    } catch { /* Downloads remain available individually. */ }
+  }
+  function renderAttachmentSelection(app) {
+    const box = node('div', 'attachment-selection');
+    const labels = { cv: 'CV', letter: 'Anschreiben', transcript: 'Leistungsübersicht', enrollment: 'Studienbescheinigung', bundle: 'Dossier PDF complet' };
+    for (const doc of documents(app)) {
+      const included = selectedKinds.has(doc.kind);
+      const row = node('div', 'attachment-row' + (included ? '' : ' attachment-removed'));
+      const name = button((labels[doc.kind] || doc.kind) + ' · ' + doc.filename, 'document:' + doc.kind, app.id);
+      const toggle = node('button', '', included ? 'Retirer de l’envoi' : 'Ajouter à l’envoi');
+      toggle.type = 'button'; toggle.disabled = sending;
+      toggle.setAttribute('aria-label', (included ? 'Retirer ' : 'Ajouter ') + (labels[doc.kind] || doc.kind) + (included ? ' de l’envoi' : ' à l’envoi'));
+      toggle.addEventListener('click', () => {
+        if (sending) return;
+        if (included) selectedKinds.delete(doc.kind);
+        else { if (doc.kind === 'bundle') selectedKinds.clear(); else selectedKinds.delete('bundle'); selectedKinds.add(doc.kind); }
+        // Keep the attachment sentence accurate after removing a letter or CV.
+        $('mail-body').value = $('mail-body').value.replace(/Meinen Lebenslauf und mein Anschreiben finden Sie im Anhang\.|Meinen Lebenslauf finden Sie im Anhang\.|Mein Anschreiben finden Sie im Anhang\.|Die ausgewählten Unterlagen finden Sie im Anhang\./g,
+          selectedKinds.has('bundle') || selectedKinds.has('cv') && selectedKinds.has('letter') ? 'Meinen Lebenslauf und mein Anschreiben finden Sie im Anhang.' : selectedKinds.has('cv') ? 'Meinen Lebenslauf finden Sie im Anhang.' : selectedKinds.has('letter') ? 'Mein Anschreiben finden Sie im Anhang.' : selectedKinds.size ? 'Die ausgewählten Unterlagen finden Sie im Anhang.' : '');
+        renderAttachmentSelection(app); refreshSelectedFiles(app);
+      });
+      row.append(name, toggle); box.append(row);
+    }
+    $('dialog-documents').replaceChildren(box);
+    $('document-note').textContent = selectedKinds.size + ' pièce(s) jointe(s) sélectionnée(s). Les pièces retirées restent dans ton dossier. Un dossier PDF complet contient plusieurs documents : choisis les PDF séparés pour les retirer individuellement.';
+  }
   async function openApplication(app) {
+    if (sending) return;
     dialogItem = app; sharedFiles = []; const draft = emailDraft(app);
+    const separate = documents(app).filter(d => ['cv', 'letter'].includes(d.kind) || d.kind === 'transcript' && app.transcript || d.kind === 'enrollment' && app.enrollment).map(d => d.kind);
+    selectedKinds = new Set(documents(app).some(d => d.kind === 'bundle') && !documents(app).some(d => d.kind === 'letter') ? ['bundle'] : separate);
     $('dialog-title').textContent = app.company; $('dialog-role').textContent = app.role;
+    if (app.researchNeedsReview) $('dialog-role').textContent += ' · BROUILLON À VÉRIFIER : ' + (app.researchWarnings || []).join(' ');
     $('mail-to').value = app.email || ''; $('mail-subject').value = draft.subject; $('mail-body').value = draft.body;
-    $('dialog-documents').replaceChildren(docButtons(app)); $('portal-action').replaceChildren();
+    renderAttachmentSelection(app); $('portal-action').replaceChildren();
     if ($('contact-suggestions')) { $('contact-suggestions').replaceChildren(); $('contact-suggestions').hidden = true; }
     if (app.url) { const a = link(app.email ? 'Voir aussi le site / formulaire ↗' : 'Ouvrir le site / formulaire pour postuler ↗', app.url); a.className = 'button'; $('portal-action').append(a); }
-    const hasLetter = documents(app).some(d => d.kind === 'letter');
-    $('document-note').textContent = hasLetter ? 'Pièces prêtes dans ton dossier : CV et lettre de motivation (Anschreiben).' : 'CV général disponible ; lettre adaptée à préparer. Vérifie les pièces avant l’envoi.';
     $('dialog-feedback').textContent = '';
     if ($('send-mail')) { $('send-mail').disabled = false; $('send-mail').textContent = '🚀 Envoyer la candidature (Gmail)'; }
     $('share-files').disabled = true; $('application-dialog').showModal();
     if (auth) {
-      if (!$('mail-to').value) {
+      if (!$('mail-to').value && !app.researchNeedsReview) {
         $('dialog-feedback').textContent = 'Recherche d’adresse e-mail officielle en cours…';
         try {
           const res = await request('/' + encodeURIComponent(app.id) + '/contacts');
@@ -225,9 +264,7 @@
           }
         } catch { if (dialogItem?.id === app.id) $('dialog-feedback').textContent = ''; }
       }
-      const kinds = documents(app).some(d => d.kind === 'bundle') ? ['bundle'] : documents(app).filter(d => ['cv', 'letter'].includes(d.kind) || d.kind === 'transcript' && app.transcript || d.kind === 'enrollment' && app.enrollment).map(d => d.kind);
-      try { const files = await Promise.all(kinds.map(kind => getDocument(app, kind))); if (dialogItem?.id !== app.id) return; sharedFiles = files; $('share-files').disabled = !files.length || !navigator.canShare || !navigator.canShare({ files }); }
-      catch { /* Ignore document download preview errors */ }
+      if (dialogItem?.id === app.id) await refreshSelectedFiles(app);
     }
   }
   document.addEventListener('click', async event => {
@@ -245,7 +282,8 @@
   $('connect').addEventListener('click', () => { if (auth) { auth = ''; online = false; sessionStorage.removeItem(AUTH); syncLabel(); } else { $('login-form').hidden = !$('login-form').hidden; if (!$('login-form').hidden) $('password').focus(); } });
   $('login-form').addEventListener('submit', async event => { event.preventDefault(); auth = 'Basic ' + btoa(unescape(encodeURIComponent($('username').value + ':' + $('password').value))); try { sessionStorage.setItem(AUTH, JSON.stringify(auth)); } catch {} $('password').value = ''; await synchronize(); });
   $('refresh').addEventListener('click', () => { if (!auth) { $('login-form').hidden = false; $('password').focus(); } else synchronize(); });
-  $('close-dialog').addEventListener('click', () => { $('application-dialog').close(); dialogItem = null; });
+  $('close-dialog').addEventListener('click', () => { if (sending) return; $('application-dialog').close(); dialogItem = null; });
+  $('application-dialog').addEventListener('cancel', event => { if (sending) event.preventDefault(); });
   $('send-mail')?.addEventListener('click', async () => {
     if (!dialogItem) return;
     if (!auth) {
@@ -267,23 +305,28 @@
       return;
     }
     const sendBtn = $('send-mail');
+    const sendingItem = dialogItem;
+    const attachmentKinds = [...selectedKinds];
+    sending = true; renderAttachmentSelection(sendingItem);
+    for (const id of ['mail-to', 'mail-subject', 'mail-body', 'close-dialog']) $(id).disabled = true;
     sendBtn.disabled = true;
     sendBtn.textContent = 'Vérification…';
     $('dialog-feedback').textContent = 'Vérification du dossier et des pièces jointes…';
     try {
-      const reviewRes = await request('/' + encodeURIComponent(dialogItem.id) + '/review', {
+      const reviewRes = await request('/' + encodeURIComponent(sendingItem.id) + '/review', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to, subject, body })
+        body: JSON.stringify({ to, subject, body, attachmentKinds })
       });
       const reviewData = await reviewRes.json();
       if (!reviewRes.ok) throw new Error(reviewData.error || 'Vérification impossible.');
+      if (JSON.stringify(reviewData.attachments.map(d => d.kind).sort()) !== JSON.stringify([...attachmentKinds].sort())) throw new Error('Le serveur doit être actualisé pour respecter les pièces retirées. Aucun mail envoyé.');
       if (!reviewData.enabled) throw new Error(reviewData.reason || 'L’envoi Gmail n’est pas disponible.');
 
       sendBtn.textContent = 'Envoi Gmail en cours…';
       $('dialog-feedback').textContent = 'Envoi via ' + reviewData.sender + ' avec ' + reviewData.attachments.length + ' pièce(s) jointe(s)…';
 
-      const sendRes = await request('/' + encodeURIComponent(dialogItem.id) + '/send', {
+      const sendRes = await request('/' + encodeURIComponent(sendingItem.id) + '/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ confirmed: true, token: reviewData.token })
@@ -291,7 +334,7 @@
       const sendData = await sendRes.json();
       if (!sendRes.ok) throw new Error(sendData.error || 'Erreur lors de l’envoi.');
 
-      const sentItem = dialogItem;
+      const sentItem = sendingItem;
       const updated = sendData.application || { ...sentItem, status: 'applied', sentAt: today(), revision: (sentItem.revision || 0) + 1 };
       applications = applications.map(a => a.id === sentItem.id ? updated : a);
       delete outbox[sentItem.id];
@@ -315,11 +358,15 @@
       sendBtn.disabled = false;
       sendBtn.textContent = '🚀 Réessayer l’envoi';
       $('dialog-feedback').textContent = error.message;
+    } finally {
+      sending = false;
+      for (const id of ['mail-to', 'mail-subject', 'mail-body', 'close-dialog']) $(id).disabled = false;
+      if (dialogItem) renderAttachmentSelection(dialogItem);
     }
   });
   $('copy-mail').addEventListener('click', async () => { try { await navigator.clipboard.writeText('An: ' + $('mail-to').value + '\nBetreff: ' + $('mail-subject').value + '\n\n' + $('mail-body').value); $('dialog-feedback').textContent = 'E-mail copié.'; } catch { $('mail-body').select(); $('dialog-feedback').textContent = 'Sélectionne et copie le texte.'; } });
   $('open-mail').addEventListener('click', () => { if (!$('mail-to').value || !$('mail-to').checkValidity()) { $('mail-to').focus(); $('dialog-feedback').textContent = 'Renseigne l’adresse du destinataire ou utilise le formulaire de l’entreprise.'; return; } location.href = 'mailto:' + encodeURIComponent($('mail-to').value) + '?subject=' + encodeURIComponent($('mail-subject').value) + '&body=' + encodeURIComponent($('mail-body').value); });
-  $('download-eml').addEventListener('click', async () => { if (!auth) { $('dialog-feedback').textContent = 'Connecte-toi pour télécharger l’e-mail avec les pièces jointes.'; return; } try { const response = await request('/' + encodeURIComponent(dialogItem.id) + '/email.eml', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: $('mail-to').value, subject: $('mail-subject').value, body: $('mail-body').value }) }); if (!response.ok) throw new Error('Brouillon indisponible.'); downloadBlob(await response.blob(), 'Bewerbung-' + dialogItem.id + '.eml'); $('dialog-feedback').textContent = 'Brouillon téléchargé avec ton texte et les pièces disponibles. Vérifie-le dans ton application mail avant l’envoi.'; } catch (error) { $('dialog-feedback').textContent = error.message; } });
+  $('download-eml').addEventListener('click', async () => { if (!auth) { $('dialog-feedback').textContent = 'Connecte-toi pour télécharger l’e-mail avec les pièces jointes.'; return; } try { const response = await request('/' + encodeURIComponent(dialogItem.id) + '/email.eml', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: $('mail-to').value, subject: $('mail-subject').value, body: $('mail-body').value, attachmentKinds: [...selectedKinds] }) }); if (!response.ok) throw new Error('Brouillon indisponible.'); if (response.headers.get('X-Tracker-Attachment-Kinds') !== JSON.stringify([...selectedKinds])) throw new Error('Le serveur doit ?tre actualis? pour respecter les pi?ces retir?es.'); downloadBlob(await response.blob(), 'Bewerbung-' + dialogItem.id + '.eml'); $('dialog-feedback').textContent = 'Brouillon téléchargé avec ton texte et les pièces disponibles. Vérifie-le dans ton application mail avant l’envoi.'; } catch (error) { $('dialog-feedback').textContent = error.message; } });
   $('share-files').addEventListener('click', async () => { try { await navigator.share({ title: $('mail-subject').value, text: 'An: ' + $('mail-to').value + '\nBetreff: ' + $('mail-subject').value + '\n\n' + $('mail-body').value, files: sharedFiles }); } catch (error) { if (error.name !== 'AbortError') $('dialog-feedback').textContent = 'Partage indisponible. Télécharge les PDF puis joins-les à ton e-mail.'; } });
   $('export').addEventListener('click', () => { downloadBlob(new Blob([JSON.stringify({ version: 2, exportedAt: new Date().toISOString(), applications, outbox }, null, 2)], { type: 'application/json;charset=utf-8' }), 'SUIVI_CANDIDATURES-' + today() + '.json'); });
   $('import').addEventListener('change', async event => {
