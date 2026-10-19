@@ -89,6 +89,7 @@
     const docs = docButtons(app); if (docs.childElementCount) info.append(docs);
     if (!documents(app).some(d => d.kind === 'letter')) info.append(node('p', 'meta', 'Lettre adaptée à préparer. CV général disponible après connexion.'));
     const sources = node('div', 'links'); if (app.email) sources.append(link(app.email, 'mailto:' + app.email));
+    if (app.jobAssistantId) sources.append(link('Préparer / ouvrir le dossier', (localPage ? 'http://127.0.0.1:5518' : 'https://pos-job-assistant.onrender.com') + '/apply/' + encodeURIComponent(app.jobAssistantId)));
     if (app.url) sources.append(link(app.opportunityType === 'initiative' ? 'Site / carrière ↗' : 'Annonce / formulaire ↗', app.url));
     if (app.sourceUrl) sources.append(link(app.sourceLabel || 'Source', app.sourceUrl));
     if (Array.isArray(app.sourceUrls)) app.sourceUrls.slice(0, 2).filter(u => u !== app.url).forEach((u, i) => sources.append(link('Source officielle ' + (i + 1), u)));
