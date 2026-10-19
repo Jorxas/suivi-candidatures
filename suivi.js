@@ -16,6 +16,9 @@
   applications = [...new Map([...applications, ...(Array.isArray(cached.applications) ? cached.applications : [])].map(a => [a.id, a])).values()];
   let outbox = read(localStorage, OUTBOX, {}), auth = integrated ? '@browser' : read(sessionStorage, AUTH, ''), online = false, busy = false, dialogItem = null, sharedFiles = [], feedbackTimer;
   let selectedKinds = new Set(), sending = false, selectionVersion = 0;
+  const ATTACHMENTS = 'jordan-attachment-preferences-v1';
+  const attachmentPreferences = read(localStorage, ATTACHMENTS, {});
+  let recipientEdited = false, preloadingContacts = false;
   // Retain the original browser storage, including IDs outside the old HTML.
   const legacy = {};
   try {
@@ -171,7 +174,28 @@
       }
       $('login-form').hidden = true; $('login-error').textContent = ''; syncLabel();
     } catch (error) { online = false; syncLabel(error.message + ' Les changements locaux restent conservés.'); $('login-error').textContent = error.message; if (!applications.length) $('login-form').hidden = false; persist(); }
-    finally { busy = false; }
+    finally { busy = false; if (online) preloadContacts(); }
+  }
+  async function preloadContacts() {
+    if (!auth || preloadingContacts || document.hidden) return;
+    preloadingContacts = true; let retry = false, delay = 2000;
+    if ($('contact-preload-status')) $('contact-preload-status').textContent = 'Préchargement des contacts en arrière-plan… Les adresses déjà connues restent disponibles.';
+    try {
+      const response = await request('/contacts/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      if (!response.ok) return;
+      const result = await response.json();
+      for (const update of result.updates || []) {
+        applications = applications.map(app => app.id === update.id ? { ...app, ...update.contacts } : app);
+        if (dialogItem?.id === update.id) {
+          Object.assign(dialogItem, update.contacts);
+          if (!sending && !recipientEdited && !$('mail-to').value && update.contacts.email) $('mail-to').value = update.contacts.email;
+        }
+      }
+      if (result.updates?.length) { persist(); render(); }
+      retry = result.remaining > 0 && (result.busy || result.updates?.length > 0); delay = result.busy ? 10000 : 2000;
+      if ($('contact-preload-status')) $('contact-preload-status').textContent = result.remaining > 0 ? 'Contacts : ' + result.remaining + ' fiche(s) à vérifier en arrière-plan. Tu peux déjà utiliser les adresses préchargées.' : 'Vérification des contacts terminée. Les adresses publiques trouvées sont conservées ; les autres fiches utilisent leur formulaire officiel.';
+    } catch { /* Known addresses remain cached and visible if a preload fails. */ }
+    finally { preloadingContacts = false; if (retry) setTimeout(preloadContacts, delay); }
   }
   async function changeState(app, status) {
     if (outbox[app.id] && busy) { notify('Cette fiche est en cours de sauvegarde.'); return; }
@@ -231,7 +255,10 @@
       toggle.addEventListener('click', () => {
         if (sending) return;
         if (included) selectedKinds.delete(doc.kind);
-        else { if (doc.kind === 'bundle') selectedKinds.clear(); else selectedKinds.delete('bundle'); selectedKinds.add(doc.kind); }
+        else { if (doc.kind === 'bundle') { selectedKinds.delete('cv'); selectedKinds.delete('letter'); } else if (['cv','letter'].includes(doc.kind)) selectedKinds.delete('bundle'); selectedKinds.add(doc.kind); }
+        const defaults = defaultAttachmentKinds(app);
+        attachmentPreferences[app.id] = { removed: defaults.filter(kind => !selectedKinds.has(kind)), added: [...selectedKinds].filter(kind => !defaults.includes(kind)) };
+        try { localStorage.setItem(ATTACHMENTS, JSON.stringify(attachmentPreferences)); } catch { /* Current selection remains in memory. */ }
         // Keep the attachment sentence accurate after removing a letter or CV.
         $('mail-body').value = $('mail-body').value.replace(/Meinen Lebenslauf und mein Anschreiben finden Sie im Anhang\.|Meinen Lebenslauf finden Sie im Anhang\.|Mein Anschreiben finden Sie im Anhang\.|Die ausgewählten Unterlagen finden Sie im Anhang\./g,
           selectedKinds.has('bundle') || selectedKinds.has('cv') && selectedKinds.has('letter') ? 'Meinen Lebenslauf und mein Anschreiben finden Sie im Anhang.' : selectedKinds.has('cv') ? 'Meinen Lebenslauf finden Sie im Anhang.' : selectedKinds.has('letter') ? 'Mein Anschreiben finden Sie im Anhang.' : selectedKinds.size ? 'Die ausgewählten Unterlagen finden Sie im Anhang.' : '');
@@ -240,32 +267,50 @@
       row.append(name, toggle); box.append(row);
     }
     $('dialog-documents').replaceChildren(box);
-    $('document-note').textContent = selectedKinds.size + ' pièce(s) jointe(s) sélectionnée(s). Les pièces retirées restent dans ton dossier. Un dossier PDF complet contient plusieurs documents : choisis les PDF séparés pour les retirer individuellement.';
+    $('document-note').textContent = selectedKinds.size + ' pièce(s) jointe(s) sélectionnée(s). Toutes les pièces disponibles sont ajoutées par défaut, dont le relevé de notes. Tes retraits restent mémorisés pour cette candidature sur cet appareil ; les fichiers restent dans ton dossier.';
+  }
+  function defaultAttachmentKinds(app) {
+    const available = new Set(documents(app).map(doc => doc.kind));
+    const extras = ['transcript','enrollment'].filter(kind => available.has(kind));
+    return available.has('bundle') && !(available.has('cv') && available.has('letter')) ? ['bundle',...extras] : ['cv','letter',...extras].filter(kind => available.has(kind));
   }
   async function openApplication(app) {
     if (sending) return;
     dialogItem = app; sharedFiles = []; const draft = emailDraft(app);
-    const separate = documents(app).filter(d => ['cv', 'letter'].includes(d.kind) || d.kind === 'transcript' && app.transcript || d.kind === 'enrollment' && app.enrollment).map(d => d.kind);
-    selectedKinds = new Set(documents(app).some(d => d.kind === 'bundle') && !documents(app).some(d => d.kind === 'letter') ? ['bundle'] : separate);
+    const savedPreference = attachmentPreferences[app.id];
+    const preference = savedPreference && Array.isArray(savedPreference.removed) && Array.isArray(savedPreference.added) ? savedPreference : { removed: [], added: [] };
+    const available = new Set(documents(app).map(doc => doc.kind));
+    selectedKinds = new Set([...defaultAttachmentKinds(app).filter(kind => !preference.removed.includes(kind)), ...preference.added.filter(kind => available.has(kind))]);
+    if (selectedKinds.has('bundle') && (selectedKinds.has('cv') || selectedKinds.has('letter'))) selectedKinds.delete('bundle');
+    recipientEdited = false;
     $('dialog-title').textContent = app.company; $('dialog-role').textContent = app.role;
     if (app.researchNeedsReview) $('dialog-role').textContent += ' · BROUILLON À VÉRIFIER : ' + (app.researchWarnings || []).join(' ');
     $('mail-to').value = app.email || ''; $('mail-subject').value = draft.subject; $('mail-body').value = draft.body;
     renderAttachmentSelection(app); $('portal-action').replaceChildren();
     if ($('contact-suggestions')) { $('contact-suggestions').replaceChildren(); $('contact-suggestions').hidden = true; }
+    if ($('contact-suggestions') && Array.isArray(app.contactCandidates) && app.contactCandidates.length) {
+      for (const candidate of app.contactCandidates) {
+        const choice = node('button', 'contact-pill', candidate.email + (candidate.kind === 'recruiting' ? ' · recrutement' : ' · contact général')); choice.type = 'button';
+        choice.onclick = () => { recipientEdited = true; $('mail-to').value = candidate.email; };
+        $('contact-suggestions').append(choice); if (candidate.sourceUrl) $('contact-suggestions').append(link('Source de l’adresse ↗',candidate.sourceUrl));
+      }
+      $('contact-suggestions').hidden = false;
+    }
     if (app.url) { const a = link(app.email ? 'Voir aussi le site / formulaire ↗' : 'Ouvrir le site / formulaire pour postuler ↗', app.url); a.className = 'button'; $('portal-action').append(a); }
-    $('dialog-feedback').textContent = '';
-    if ($('send-mail')) { $('send-mail').disabled = false; $('send-mail').textContent = '🚀 Envoyer la candidature (Gmail)'; }
+    $('dialog-feedback').textContent = app.status === 'applied' ? 'Déjà marquée Postulé' + (app.sentAt ? ' le ' + dateFormat.format(new Date(app.sentAt + 'T12:00:00')) : '') + '. Aucun renvoi proposé. Si ce statut est incorrect, utilise « Remettre à postuler » sur la fiche.' : '';
+    if ($('send-mail')) { $('send-mail').disabled = app.status === 'applied'; $('send-mail').textContent = app.status === 'applied' ? 'Déjà postulée' : '🚀 Envoyer la candidature (Gmail)'; }
     $('share-files').disabled = true; $('application-dialog').showModal();
     if (auth) {
       if (!$('mail-to').value && !app.researchNeedsReview) {
-        $('dialog-feedback').textContent = 'Recherche d’adresse e-mail officielle en cours…';
+        if (app.status !== 'applied') $('dialog-feedback').textContent = 'Recherche d’adresse e-mail officielle en cours…';
         try {
-          const res = await request('/' + encodeURIComponent(app.id) + '/contacts');
+          const res = await request('/' + encodeURIComponent(app.id) + '/contacts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
           if (res.ok) {
             const data = await res.json();
             if (dialogItem?.id === app.id) {
               if (data.candidates && data.candidates.length) {
-                $('mail-to').value = data.candidates[0].email;
+                if (!recipientEdited && !$('mail-to').value) $('mail-to').value = data.candidates[0].email;
+                Object.assign(app, { email: app.email || data.candidates[0].email, contactCandidates: data.candidates, contactCheckedAt: data.checkedAt, contactStatus: data.outcome }); persist(); render();
                 if ($('contact-suggestions')) {
                   $('contact-suggestions').replaceChildren();
                   for (const cand of data.candidates) {
@@ -276,13 +321,13 @@
                   }
                   $('contact-suggestions').hidden = false;
                 }
-                $('dialog-feedback').textContent = '';
+                if (app.status !== 'applied') $('dialog-feedback').textContent = data.message || '';
               } else {
-                $('dialog-feedback').textContent = 'Aucune adresse e-mail publique trouvée. Postule sur le site ou renseigne une adresse.';
+                if (app.status !== 'applied') $('dialog-feedback').textContent = data.message || 'Aucune adresse e-mail publique trouvée. Postule sur le site ou renseigne une adresse.';
               }
             }
-          }
-        } catch { if (dialogItem?.id === app.id) $('dialog-feedback').textContent = ''; }
+          } else if (dialogItem?.id === app.id && app.status !== 'applied') $('dialog-feedback').textContent = 'Recherche de contact indisponible. Les adresses déjà connues restent conservées ; aucun destinataire n’est inventé.';
+        } catch { if (dialogItem?.id === app.id && app.status !== 'applied') $('dialog-feedback').textContent = 'Recherche de contact interrompue. Utilise l’adresse connue ou le formulaire officiel.'; }
       }
       if (dialogItem?.id === app.id) await refreshSelectedFiles(app);
     }
@@ -305,9 +350,11 @@
   $('login-form').addEventListener('submit', async event => { event.preventDefault(); auth = 'Basic ' + btoa(unescape(encodeURIComponent($('username').value.trim() + ':' + $('password').value))); try { sessionStorage.setItem(AUTH, JSON.stringify(auth)); } catch {} $('password').value = ''; await synchronize(); });
   $('refresh').addEventListener('click', () => { if (!auth) { $('login-form').hidden = false; $('password').focus(); } else synchronize(); });
   $('close-dialog').addEventListener('click', () => { if (sending) return; $('application-dialog').close(); dialogItem = null; });
+  $('mail-to').addEventListener('input', () => { recipientEdited = true; });
   $('application-dialog').addEventListener('cancel', event => { if (sending) event.preventDefault(); });
   $('send-mail')?.addEventListener('click', async () => {
     if (!dialogItem) return;
+    if (dialogItem.status === 'applied') { $('send-mail').disabled = true; $('send-mail').textContent = 'Déjà postulée'; $('dialog-feedback').textContent = 'Cette candidature est déjà marquée Postulé. Vérifie le précédent envoi ; aucun renvoi automatique.'; return; }
     if (!auth) {
       $('dialog-feedback').textContent = 'Connecte-toi à ton suivi pour envoyer la candidature.';
       $('login-form').hidden = false;
@@ -377,8 +424,9 @@
         }
       }, 150);
     } catch (error) {
-      sendBtn.disabled = false;
-      sendBtn.textContent = '🚀 Réessayer l’envoi';
+      const alreadyApplied = /déjà marquée Postulé/i.test(error.message);
+      sendBtn.disabled = alreadyApplied;
+      sendBtn.textContent = alreadyApplied ? 'Déjà postulée' : '🚀 Réessayer l’envoi';
       $('dialog-feedback').textContent = error.message;
     } finally {
       sending = false;
