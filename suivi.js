@@ -82,6 +82,13 @@
     if (app.location) info.append(node('p', 'meta', app.location));
     const badge = app.opportunityType === 'open-role' ? 'Offre publiée' : app.opportunityType === 'initiative' ? 'Candidature spontanée' : app.historical ? 'Ancien dossier' : 'Dossier existant';
     info.append(node('span', 'badge' + (app.historical ? ' historical' : ''), badge));
+    if (app.compatibility) {
+      const match = app.compatibility;
+      const label = typeof match.score !== 'number' ? 'Compatibilité à préciser' : (match.basis === 'description' ? 'Compatibilité CV : ' : 'Affinité estimée : ') + match.score + ' %';
+      const details = node('details', 'compatibility'); details.append(node('summary', '', label));
+      for (const reason of [...(match.reasons || []), ...(match.warnings || [])]) details.append(node('p', 'meta', reason));
+      details.append(node('p', 'meta', 'Score indicatif, pas une probabilité d’embauche.')); info.append(details);
+    }
     if (app.researchNeedsReview) info.append(node('span', 'badge historical', 'Brouillon · employeur à vérifier'));
     if (app.status === 'applied') info.append(node('p', 'meta', app.sentAt ? 'Postulée le ' + dateFormat.format(new Date(app.sentAt + 'T12:00:00')) : 'Déjà postulée · date non renseignée'));
     if (app.status === 'unknown') info.append(node('p', 'meta', 'Envoi à confirmer'));
@@ -91,12 +98,12 @@
     const docs = docButtons(app); if (docs.childElementCount) info.append(docs);
     if (!documents(app).some(d => d.kind === 'letter')) info.append(node('p', 'meta', 'Lettre adaptée à préparer. CV général disponible après connexion.'));
     const sources = node('div', 'links'); if (app.email) sources.append(link(app.email, 'mailto:' + app.email));
-    if (app.jobAssistantId) sources.append(link('Préparer / ouvrir le dossier', (localPage ? 'http://127.0.0.1:5518' : 'https://pos-job-assistant.onrender.com') + '/apply/' + encodeURIComponent(app.jobAssistantId)));
     if (app.url) sources.append(link(app.opportunityType === 'initiative' ? 'Site / carrière ↗' : 'Annonce / formulaire ↗', app.url));
     if (app.sourceUrl) sources.append(link(app.sourceLabel || 'Source', app.sourceUrl));
     if (Array.isArray(app.sourceUrls)) app.sourceUrls.slice(0, 2).filter(u => u !== app.url).forEach((u, i) => sources.append(link('Source officielle ' + (i + 1), u)));
     if (sources.childElementCount) info.append(sources);
     const actions = node('div', 'actions'); actions.append(button('Postuler / e-mail', 'prepare', app.id));
+    const assistant = link('Aide au formulaire', (integrated ? location.origin : localPage ? 'http://127.0.0.1:5518' : 'https://pos-job-assistant.onrender.com') + '/dossier/' + encodeURIComponent(app.id)); assistant.className = 'button'; actions.append(assistant);
     if (app.status === 'applied') actions.append(button('Remettre à postuler', 'state:pending', app.id, 'undo'));
     else { actions.append(button(app.status === 'unknown' ? 'J’ai déjà postulé' : '✓ J’ai postulé', 'state:applied', app.id, 'primary')); if (app.status === 'unknown' || app.status === 'archived') actions.append(button('À postuler', 'state:pending', app.id)); }
     if (app.status !== 'archived') actions.append(button('Archiver', 'state:archived', app.id, 'undo'));
@@ -113,7 +120,8 @@
     const visible = selected.filter(a => (!q || normalize([a.company, a.role, a.location, a.sector].join(' ')).includes(q)) && (!region || a.region === region || region === 'school' && a.schoolList || region === 'Historique' && a.historical) && (!type || type === 'historical' ? !type || a.historical : a.opportunityType === type));
     const groups = { sent: visible.filter(a => a.status === 'applied'), pending: visible.filter(a => a.status !== 'applied') };
     groups.sent.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || '') || a.company.localeCompare(b.company));
-    groups.pending.sort((a, b) => (b.addedAt || b.verifiedAt || '').localeCompare(a.addedAt || a.verifiedAt || '') || a.company.localeCompare(b.company));
+    const rank = $('rank-sort')?.value === 'compatibility';
+    groups.pending.sort((a, b) => (rank ? (b.compatibility?.score ?? -1) - (a.compatibility?.score ?? -1) : 0) || (b.addedAt || b.verifiedAt || '').localeCompare(a.addedAt || a.verifiedAt || '') || a.company.localeCompare(b.company));
     for (const [name, list] of Object.entries(groups)) {
       $('' + name + '-list').replaceChildren(...list.map(card));
       if (!list.length) $(name + '-list').append(node('p', 'empty', applications.length ? 'Aucune candidature dans cette liste avec ces filtres.' : 'Connecte-toi pour charger tes entreprises et tes documents.'));
@@ -287,6 +295,7 @@
   });
   for (const id of ['search', 'region', 'opportunity']) $(id).addEventListener('input', render);
   $('catalogue')?.addEventListener('change', render);
+  $('rank-sort')?.addEventListener('change', render);
   $('toggle-applied').addEventListener('click', () => {
     hideApplied = !hideApplied;
     try { localStorage.setItem(VIEW, JSON.stringify(hideApplied)); } catch {}
