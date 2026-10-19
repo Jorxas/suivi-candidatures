@@ -85,10 +85,11 @@
     if (app.location) info.append(node('p', 'meta', app.location));
     const badge = app.opportunityType === 'open-role' ? 'Offre publiée' : app.opportunityType === 'initiative' ? 'Candidature spontanée' : app.historical ? 'Ancien dossier' : 'Dossier existant';
     info.append(node('span', 'badge' + (app.historical ? ' historical' : ''), badge));
-    if (app.compatibility) {
-      const match = app.compatibility;
-      const label = typeof match.score !== 'number' ? 'Compatibilité à préciser' : (match.basis === 'description' ? 'Compatibilité CV : ' : 'Affinité estimée : ') + match.score + ' %';
+    {
+      const match = app.compatibility || { score: null, reasons: [], warnings: ['Le score sera disponible après synchronisation avec le suivi à jour.'] };
+      const label = typeof match.score !== 'number' ? 'Compatibilité CV : à préciser' : (match.basis === 'description' ? 'Compatibilité CV : ' : 'Compatibilité CV estimée : ') + match.score + ' %';
       const details = node('details', 'compatibility'); details.append(node('summary', '', label));
+      if (typeof match.score !== 'number') details.append(node('p', 'meta', 'Informations insuffisantes sur le poste pour calculer un pourcentage fiable.'));
       for (const reason of [...(match.reasons || []), ...(match.warnings || [])]) details.append(node('p', 'meta', reason));
       details.append(node('p', 'meta', 'Score indicatif, pas une probabilité d’embauche.')); info.append(details);
     }
@@ -199,12 +200,28 @@
   }
   async function changeState(app, status) {
     if (outbox[app.id] && busy) { notify('Cette fiche est en cours de sauvegarde.'); return; }
+    const nextId = status === 'applied' ? nextPendingId(app.id) : null;
     const sentAt = status === 'applied' ? app.status === 'unknown' ? null : today() : null;
     outbox[app.id] = { status, sentAt, revision: outbox[app.id]?.revision ?? app.revision ?? 0 };
     Object.assign(app, { status, sentAt }); persist(); render();
     notify(online ? 'Enregistrement du statut…' : 'Statut conservé sur cet appareil ; connexion nécessaire pour le synchroniser.');
     await synchronize();
+    if (status === 'applied' && applications.find(a => a.id === app.id)?.status === 'applied') continuePending(nextId);
     if (online && !outbox[app.id]) notify('Statut enregistré sur le serveur.');
+  }
+  function nextPendingId(id) {
+    const cards = [...$('pending-list').querySelectorAll('.card')];
+    const index = cards.findIndex(card => card.dataset.id === id);
+    return cards[index + 1]?.dataset.id || cards.find(card => card.dataset.id !== id)?.dataset.id || null;
+  }
+  function continuePending(nextId) {
+    hideApplied = true;
+    try { localStorage.setItem(VIEW, JSON.stringify(true)); } catch {}
+    render();
+    const next = [...$('pending-list').querySelectorAll('.card')].find(card => card.dataset.id === nextId) || $('pending-list').querySelector('.card') || $('pending-section');
+    next.tabIndex = -1;
+    next.focus({ preventScroll: true });
+    next.scrollIntoView({ behavior: 'instant', block: 'start' });
   }
   function downloadBlob(blob, filename) { const url = URL.createObjectURL(blob); const a = node('a'); a.href = url; a.download = filename; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
   async function getDocument(app, kind) {
@@ -405,25 +422,17 @@
       if (!sendRes.ok) throw new Error(sendData.error || 'Erreur lors de l’envoi.');
 
       const sentItem = sendingItem;
+      const nextId = nextPendingId(sentItem.id);
       const updated = sendData.application || { ...sentItem, status: 'applied', sentAt: today(), revision: (sentItem.revision || 0) + 1 };
       applications = applications.map(a => a.id === sentItem.id ? updated : a);
       delete outbox[sentItem.id];
-      hideApplied = false;
-      try { localStorage.setItem(VIEW, JSON.stringify(false)); } catch {}
       persist();
-      render();
-      notify('✓ Candidature envoyée à ' + sentItem.company + ' et déplacée dans « Postulé » !');
+      notify('✓ Candidature envoyée à ' + sentItem.company + '. Tu peux continuer avec les non postulées.');
 
       $('application-dialog').close();
       dialogItem = null;
 
-      setTimeout(() => {
-        const cardElem = document.querySelector(`.card[data-id="${sentItem.id}"]`);
-        if (cardElem) {
-          cardElem.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          cardElem.classList.add('highlight-sent');
-        }
-      }, 150);
+      continuePending(nextId);
     } catch (error) {
       const alreadyApplied = /déjà marquée Postulé/i.test(error.message);
       sendBtn.disabled = alreadyApplied;
