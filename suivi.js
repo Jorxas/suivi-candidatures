@@ -105,10 +105,10 @@
     if (app.sourceUrl) sources.append(link(app.sourceLabel || 'Source', app.sourceUrl));
     if (Array.isArray(app.sourceUrls)) app.sourceUrls.slice(0, 2).filter(u => u !== app.url).forEach((u, i) => sources.append(link('Source officielle ' + (i + 1), u)));
     if (sources.childElementCount) info.append(sources);
-    const actions = node('div', 'actions'); actions.append(button('Postuler / e-mail', 'prepare', app.id));
+    const actions = node('div', 'actions'); actions.append(button('Préparer l’e-mail', 'prepare', app.id));
     const assistant = link('Aide au formulaire', (integrated ? location.origin : localPage ? 'http://127.0.0.1:5518' : 'https://pos-job-assistant.onrender.com') + '/dossier/' + encodeURIComponent(app.id)); assistant.className = 'button'; actions.append(assistant);
     if (app.status === 'applied') actions.append(button('Remettre à postuler', 'state:pending', app.id, 'undo'));
-    else { actions.append(button(app.status === 'unknown' ? 'J’ai déjà postulé' : '✓ J’ai postulé', 'state:applied', app.id, 'primary')); if (app.status === 'unknown' || app.status === 'archived') actions.append(button('À postuler', 'state:pending', app.id)); }
+    else { actions.append(button('Marquer un envoi fait ailleurs', 'state:applied', app.id)); if (app.status === 'unknown' || app.status === 'archived') actions.append(button('À postuler', 'state:pending', app.id)); }
     if (app.status !== 'archived') actions.append(button('Archiver', 'state:archived', app.id, 'undo'));
     if (outbox[app.id]) info.append(node('p', 'meta', 'Changement en attente de synchronisation.'));
     article.append(info, actions); return article;
@@ -297,6 +297,7 @@
       $('contact-suggestions').hidden = false;
     }
     if (app.url) { const a = link(app.email ? 'Voir aussi le site / formulaire ↗' : 'Ouvrir le site / formulaire pour postuler ↗', app.url); a.className = 'button'; $('portal-action').append(a); }
+    $('portal-action').append(node('p', 'meta', 'Ouvrir cet aperçu ou le site ne transmet rien. Seul le bouton « Envoyer la candidature (Gmail) » envoie cet e-mail et enregistre le statut Postulé.'));
     $('dialog-feedback').textContent = app.status === 'applied' ? 'Déjà marquée Postulé' + (app.sentAt ? ' le ' + dateFormat.format(new Date(app.sentAt + 'T12:00:00')) : '') + '. Aucun renvoi proposé. Si ce statut est incorrect, utilise « Remettre à postuler » sur la fiche.' : '';
     if ($('send-mail')) { $('send-mail').disabled = app.status === 'applied'; $('send-mail').textContent = app.status === 'applied' ? 'Déjà postulée' : '🚀 Envoyer la candidature (Gmail)'; }
     $('share-files').disabled = true; $('application-dialog').showModal();
