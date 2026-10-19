@@ -1,8 +1,9 @@
 'use strict';
 (() => {
   const localPage = typeof location !== 'undefined' && (location.protocol === 'file:' || ['localhost', '127.0.0.1'].includes(location.hostname));
-  const API = localPage ? 'http://127.0.0.1:5517/api/tracker' : 'https://pos-job-assistant.onrender.com/api/tracker';
-  if (document.getElementById('discover-jobs')) document.getElementById('discover-jobs').href = localPage ? 'http://127.0.0.1:5518/' : 'https://pos-job-assistant.onrender.com/';
+  const integrated = document.documentElement?.dataset?.integratedTracker === 'true';
+  const API = integrated ? location.origin + '/api/tracker' : localPage ? 'http://127.0.0.1:5517/api/tracker' : 'https://pos-job-assistant.onrender.com/api/tracker';
+  if (document.getElementById('discover-jobs')) document.getElementById('discover-jobs').href = integrated ? '/offres' : localPage ? 'http://127.0.0.1:5518/offres' : 'https://pos-job-assistant.onrender.com/offres';
   const CACHE = 'jordan-tracker-cache-v2', OUTBOX = 'jordan-tracker-outbox-v2', AUTH = 'jordan-tracker-session-v2';
   const $ = id => document.getElementById(id);
   const initial = JSON.parse($('applications-data').textContent || '[]');
@@ -13,7 +14,7 @@
   let applications = initial.map(a => ({ ...a, status: a.status || (a.sentAt ? 'applied' : 'pending'), revision: a.revision || 0 }));
   const cached = read(localStorage, CACHE, { applications: [] });
   applications = [...new Map([...applications, ...(Array.isArray(cached.applications) ? cached.applications : [])].map(a => [a.id, a])).values()];
-  let outbox = read(localStorage, OUTBOX, {}), auth = read(sessionStorage, AUTH, ''), online = false, busy = false, dialogItem = null, sharedFiles = [], feedbackTimer;
+  let outbox = read(localStorage, OUTBOX, {}), auth = integrated ? '@browser' : read(sessionStorage, AUTH, ''), online = false, busy = false, dialogItem = null, sharedFiles = [], feedbackTimer;
   let selectedKinds = new Set(), sending = false, selectionVersion = 0;
   // Retain the original browser storage, including IDs outside the old HTML.
   const legacy = {};
@@ -45,6 +46,7 @@
     const count = Object.keys(outbox).length;
     $('sync-status').textContent = message || (online ? count ? count + ' changement(s) en attente de synchronisation.' : 'Synchronisé · sauvegardé sur le serveur.' : count ? count + ' changement(s) conservé(s) sur cet appareil. Connecte-toi pour les synchroniser.' : initial.length ? 'Mode local · connecte-toi pour retrouver ton suivi sur téléphone.' : 'Connecte-toi pour charger tes entreprises, tes statuts et tes documents.');
     $('connect').textContent = auth ? 'Déconnexion' : 'Se connecter';
+    if (integrated) $('connect').hidden = true;
   }
   const labels = { cv: 'CV (PDF)', letter: 'Anschreiben (PDF)', bundle: 'Dossier complet (PDF)', transcript: 'Leistungsübersicht (PDF)', enrollment: 'Studienbescheinigung (PDF)' };
   function cleanDocName(name, kind) {
@@ -106,21 +108,23 @@
     $('toggle-applied').setAttribute('title', hideApplied ? 'Afficher les postulées' : 'Masquer les postulées');
     $('toggle-applied').setAttribute('aria-expanded', String(!hideApplied));
     const q = normalize($('search').value), region = $('region').value, type = $('opportunity').value;
-    const visible = applications.filter(a => (!q || normalize([a.company, a.role, a.location, a.sector].join(' ')).includes(q)) && (!region || a.region === region || region === 'school' && a.schoolList || region === 'Historique' && a.historical) && (!type || type === 'historical' ? !type || a.historical : a.opportunityType === type));
+    const catalogue = $('catalogue')?.value || 'all';
+    const selected = applications.filter(a => catalogue === 'all' || (catalogue === 'new' ? a.id.startsWith('job-') : !a.id.startsWith('job-')));
+    const visible = selected.filter(a => (!q || normalize([a.company, a.role, a.location, a.sector].join(' ')).includes(q)) && (!region || a.region === region || region === 'school' && a.schoolList || region === 'Historique' && a.historical) && (!type || type === 'historical' ? !type || a.historical : a.opportunityType === type));
     const groups = { sent: visible.filter(a => a.status === 'applied'), pending: visible.filter(a => a.status !== 'applied') };
     groups.sent.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || '') || a.company.localeCompare(b.company));
     groups.pending.sort((a, b) => (b.addedAt || b.verifiedAt || '').localeCompare(a.addedAt || a.verifiedAt || '') || a.company.localeCompare(b.company));
     for (const [name, list] of Object.entries(groups)) {
       $('' + name + '-list').replaceChildren(...list.map(card));
       if (!list.length) $(name + '-list').append(node('p', 'empty', applications.length ? 'Aucune candidature dans cette liste avec ces filtres.' : 'Connecte-toi pour charger tes entreprises et tes documents.'));
-      $(name + '-count').textContent = list.length; $(name + '-total').textContent = applications.filter(a => name === 'sent' ? a.status === 'applied' : a.status !== 'applied').length;
+      $(name + '-count').textContent = list.length; $(name + '-total').textContent = selected.filter(a => name === 'sent' ? a.status === 'applied' : a.status !== 'applied').length;
     }
-    $('overview').textContent = applications.length ? new Set(applications.map(a => normalize(a.company))).size + ' entreprises · ' + applications.length + ' fiches conservées' : 'Ton suivi apparaît après connexion.';
+    $('overview').textContent = applications.length ? new Set(selected.map(a => normalize(a.company))).size + ' entreprises · ' + selected.length + ' fiches affichées · ' + applications.length + ' fiches conservées au total' : 'Ton suivi apparaît après connexion.';
     if (!applications.length) for (const name of ['sent', 'pending']) { $(name + '-count').textContent = '—'; $(name + '-total').textContent = '—'; }
     syncLabel();
   }
   async function request(path = '', options = {}) {
-    const headers = { ...(options.headers || {}) }; if (auth) headers.Authorization = auth;
+    const headers = { ...(options.headers || {}) }; if (auth && auth !== '@browser') headers.Authorization = auth;
     const response = await fetch(API + path, { ...options, headers, cache: 'no-store', signal: AbortSignal.timeout(90000) });
     if (response.status === 401) {
       auth = ''; online = false;
@@ -282,6 +286,7 @@
     catch (error) { notify(error.message); }
   });
   for (const id of ['search', 'region', 'opportunity']) $(id).addEventListener('input', render);
+  $('catalogue')?.addEventListener('change', render);
   $('toggle-applied').addEventListener('click', () => {
     hideApplied = !hideApplied;
     try { localStorage.setItem(VIEW, JSON.stringify(hideApplied)); } catch {}
