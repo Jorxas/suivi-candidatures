@@ -2,6 +2,7 @@
 (() => {
   const localPage = typeof location !== 'undefined' && (location.protocol === 'file:' || ['localhost', '127.0.0.1'].includes(location.hostname));
   const API = localPage ? 'http://127.0.0.1:5517/api/tracker' : 'https://pos-job-assistant.onrender.com/api/tracker';
+  if (document.getElementById('discover-jobs')) document.getElementById('discover-jobs').href = localPage ? 'http://127.0.0.1:5518/' : 'https://pos-job-assistant.onrender.com/';
   const CACHE = 'jordan-tracker-cache-v2', OUTBOX = 'jordan-tracker-outbox-v2', AUTH = 'jordan-tracker-session-v2';
   const $ = id => document.getElementById(id);
   const initial = JSON.parse($('applications-data').textContent || '[]');
