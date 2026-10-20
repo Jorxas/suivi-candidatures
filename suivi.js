@@ -43,6 +43,27 @@
   function opportunityKind(app) { return /initiativbewerbung|candidature spontan|unsolicited application/i.test(app.role || '') ? 'initiative' : app.opportunityType; }
   function queueGroup(app) { return app.status === 'archived' ? 2 : opportunityKind(app) === 'open-role' ? 0 : opportunityKind(app) === 'initiative' ? 1 : 2; }
   function arrival(app) { return app.addedAt || app.createdAt || ''; }
+  function companyKey(app) {
+    const key = normalize(app.company).replace(/ß/g, 'ss').replace(/&/g, ' ').replace(/\b(und|gmbh|ag|kg|co|kgaa|se|ug|mbh|inc|ltd|limited|holding|haftungsbeschrankt)\b/g, '').replace(/[^a-z0-9]/g, '');
+    return !key || /^(?:employeuraverifier|unbekannt|unknown)$/.test(key) ? 'unknown:' + app.id : key;
+  }
+  function eligible(app) {
+    const title = normalize(app.role);
+    if (/\b(senior|sr\.?|lead|principal|head of|leiter|leitung)\b/.test(title)) return false;
+    const tech = /\bit\b|informatik|software|webentwickl|programmier|\bdata\b|daten|cloud|\bki\b|cyber|security|digital|devops|backend|frontend|full.?stack|netzwerk|embedded|\bux\b|\bui\b|glasfaser|elektrotechnik|systemfuhrung|\bgrc\b/.test(title);
+    if (!tech && /personalentwicklung|human resources|\bhr\b|steuerberatung|umsatzsteuer|wirtschaftspruf|immobilien|sprachdozent|\bverkauf\b|content creator|social media|gestaltung und design|produktionsmanagement|\blogistik\b|\blogistics\b|kommunikation.*kultur/.test(title)) return false;
+    return opportunityKind(app) === 'initiative' || /werkstud|working student|student trainee|praktik|prakt\.|internship|\bintern\b|\bstage\b/.test(title);
+  }
+  function companyCatalogue() {
+    const choices = new Map();
+    const priority = (a,b) => Number(a.status === 'applied') - Number(b.status === 'applied') || Number(a.status !== 'archived') - Number(b.status !== 'archived') || (a.compatibility?.score ?? -1) - (b.compatibility?.score ?? -1) || arrival(a).localeCompare(arrival(b)) || b.id.localeCompare(a.id);
+    for (const app of applications) {
+      if (!eligible(app)) continue;
+      const key = companyKey(app), previous = choices.get(key);
+      if (!previous || priority(app, previous) > 0) choices.set(key, app);
+    }
+    return [...choices.values()];
+  }
   function notify(text) { clearTimeout(feedbackTimer); $('feedback').textContent = text; $('feedback').hidden = false; feedbackTimer = setTimeout(() => { $('feedback').hidden = true; }, 5500); }
   function persist() {
     try { localStorage.setItem(CACHE, JSON.stringify({ version: 2, applications })); localStorage.setItem(OUTBOX, JSON.stringify(outbox)); }
@@ -126,7 +147,7 @@
     $('toggle-applied').setAttribute('aria-expanded', String(!hideApplied));
     const q = normalize($('search').value), region = $('region').value, type = $('opportunity').value;
     const catalogue = $('catalogue')?.value || 'all';
-    const selected = applications.filter(a => catalogue === 'all' || (catalogue === 'new' ? a.id.startsWith('job-') : !a.id.startsWith('job-')));
+    const selected = companyCatalogue().filter(a => catalogue === 'all' || (catalogue === 'new' ? a.id.startsWith('job-') : !a.id.startsWith('job-')));
     const visible = selected.filter(a => (!q || normalize([a.company, a.role, a.location, a.sector].join(' ')).includes(q)) && (!region || a.region === region || region === 'school' && a.schoolList || region === 'Historique' && a.historical) && (!type || (type === 'historical' ? a.historical : opportunityKind(a) === type)));
     const groups = { sent: visible.filter(a => a.status === 'applied'), pending: visible.filter(a => a.status !== 'applied') };
     groups.sent.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || '') || a.company.localeCompare(b.company));
@@ -336,9 +357,13 @@
       $('dialog-feedback').textContent = 'Dossier incomplet : prépare le CV ciblé et la lettre de motivation avant l’envoi.';
       if (app.jobAssistantId) $('portal-action').append(button('Préparer CV + lettre', 'prepare-documents', app.id, 'primary'));
     }
+    if (app.applicationChannel === 'portal-only') {
+      $('send-mail').disabled = true; $('send-mail').textContent = 'Candidater via le formulaire';
+      $('dialog-feedback').textContent = 'Cet employeur utilise un formulaire officiel. Ouvre le lien ci-dessus et utilise les documents du dossier.';
+    }
     $('share-files').disabled = true; $('application-dialog').showModal();
     if (auth) {
-      if (!$('mail-to').value && !app.researchNeedsReview) {
+      if (!$('mail-to').value && !app.researchNeedsReview && app.applicationChannel !== 'portal-only') {
         if (app.status !== 'applied') $('dialog-feedback').textContent = 'Recherche d’adresse e-mail officielle en cours…';
         try {
           const res = await request('/' + encodeURIComponent(app.id) + '/contacts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
