@@ -77,6 +77,7 @@
     }
     return docs;
   }
+  function dossierReady(app) { const docs = documents(app); return docs.some(d => d.kind === 'bundle') || docs.some(d => d.kind === 'cv' && !d.isGeneral) && docs.some(d => d.kind === 'letter'); }
   function docButtons(app) {
     const box = node('div', 'links');
     for (const d of documents(app)) box.append(button(d.kind === 'cv' && d.isGeneral ? 'CV général (PDF)' : labels[d.kind] || d.kind, 'document:' + d.kind, app.id));
@@ -99,6 +100,7 @@
     if (app.researchNeedsReview) info.append(node('span', 'badge historical', 'Brouillon · employeur à vérifier'));
     if (app.status === 'applied') info.append(node('p', 'meta', app.sentAt ? 'Postulée le ' + dateFormat.format(new Date(app.sentAt + 'T12:00:00')) : 'Déjà postulée · date non renseignée'));
     if (app.status === 'unknown') info.append(node('p', 'meta', 'Envoi à confirmer'));
+    if (app.preparationMethod === 'profile-template') info.append(node('p', 'meta', 'CV et lettre préparés localement à partir de ton profil et de l’annonce. Version structurée à relire avant envoi.'));
     if (app.status === 'archived') info.append(node('p', 'meta', 'Archivée · conservée dans le suivi'));
     if (app.note) info.append(node('p', 'note', app.note));
     if (app.addedAt || app.verifiedAt) info.append(node('p', 'meta', 'Ajout / vérification : ' + (app.verifiedAt || app.addedAt)));
@@ -110,6 +112,7 @@
     if (Array.isArray(app.sourceUrls)) app.sourceUrls.slice(0, 2).filter(u => u !== app.url).forEach((u, i) => sources.append(link('Source officielle ' + (i + 1), u)));
     if (sources.childElementCount) info.append(sources);
     const actions = node('div', 'actions'); actions.append(button('Préparer l’e-mail', 'prepare', app.id));
+    if (app.status !== 'applied' && app.status !== 'archived' && !dossierReady(app) && app.jobAssistantId) actions.append(button('Préparer CV + lettre', 'prepare-documents', app.id, 'primary'));
     const assistant = link('Aide au formulaire', (integrated ? location.origin : localPage ? 'http://127.0.0.1:5518' : 'https://pos-job-assistant.onrender.com') + '/dossier/' + encodeURIComponent(app.id)); assistant.className = 'button'; actions.append(assistant);
     if (app.status === 'applied') actions.append(button('Remettre à postuler', 'state:pending', app.id, 'undo'));
     else { actions.append(button('Marquer un envoi fait ailleurs', 'state:applied', app.id)); if (app.status === 'unknown' || app.status === 'archived') actions.append(button('À postuler', 'state:pending', app.id)); }
@@ -148,7 +151,7 @@
   }
   async function request(path = '', options = {}) {
     const headers = { ...(options.headers || {}) }; if (auth && auth !== '@browser') headers.Authorization = auth;
-    const response = await fetch(API + path, { ...options, headers, cache: 'no-store', signal: AbortSignal.timeout(90000) });
+    const response = await fetch(API + path, { ...options, headers, cache: 'no-store', signal: options.signal || AbortSignal.timeout(90000) });
     if (response.status === 401) {
       auth = ''; online = false;
       try { sessionStorage.removeItem(AUTH); } catch {}
@@ -328,6 +331,11 @@
     $('portal-action').append(node('p', 'meta', 'Ouvrir cet aperçu ou le site ne transmet rien. Seul le bouton « Envoyer la candidature (Gmail) » envoie cet e-mail et enregistre le statut Postulé.'));
     $('dialog-feedback').textContent = app.status === 'applied' ? 'Déjà marquée Postulé' + (app.sentAt ? ' le ' + dateFormat.format(new Date(app.sentAt + 'T12:00:00')) : '') + '. Aucun renvoi proposé. Si ce statut est incorrect, utilise « Remettre à postuler » sur la fiche.' : '';
     if ($('send-mail')) { $('send-mail').disabled = app.status === 'applied'; $('send-mail').textContent = app.status === 'applied' ? 'Déjà postulée' : '🚀 Envoyer la candidature (Gmail)'; }
+    if (app.status !== 'applied' && !dossierReady(app)) {
+      $('send-mail').disabled = true; $('send-mail').textContent = 'CV ciblé et lettre à préparer';
+      $('dialog-feedback').textContent = 'Dossier incomplet : prépare le CV ciblé et la lettre de motivation avant l’envoi.';
+      if (app.jobAssistantId) $('portal-action').append(button('Préparer CV + lettre', 'prepare-documents', app.id, 'primary'));
+    }
     $('share-files').disabled = true; $('application-dialog').showModal();
     if (auth) {
       if (!$('mail-to').value && !app.researchNeedsReview) {
@@ -364,8 +372,17 @@
   document.addEventListener('click', async event => {
     const b = event.target.closest('button[data-action]'); if (!b) return;
     const app = applications.find(a => a.id === b.dataset.id); if (!app) return;
-    try { if (b.dataset.action === 'prepare') await openApplication(app); else if (b.dataset.action.startsWith('state:')) await changeState(app, b.dataset.action.split(':')[1]); else if (b.dataset.action.startsWith('document:')) await downloadDocument(app, b.dataset.action.split(':')[1]); }
-    catch (error) { notify(error.message); }
+    try {
+      if (b.dataset.action === 'prepare-documents') {
+        b.disabled = true; b.textContent = 'Préparation du CV et de la lettre…'; notify('Préparation du dossier personnalisé en cours. Aucun envoi de mail.');
+        const response = await request('/' + encodeURIComponent(app.id) + '/prepare', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(240000) });
+        const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Préparation indisponible. Réessaie depuis le dossier.');
+        applications = applications.map(a => a.id === app.id ? data.application : a); persist(); render();
+        if (dialogItem?.id === app.id) { $('application-dialog').close(); await openApplication(data.application); }
+        notify('CV ciblé et lettre disponibles. Aucun e-mail envoyé.');
+      } else if (b.dataset.action === 'prepare') await openApplication(app); else if (b.dataset.action.startsWith('state:')) await changeState(app, b.dataset.action.split(':')[1]); else if (b.dataset.action.startsWith('document:')) await downloadDocument(app, b.dataset.action.split(':')[1]);
+    }
+    catch (error) { notify(error.message); if (b.dataset.action === 'prepare-documents') { b.disabled = false; b.textContent = 'Réessayer la préparation'; if (dialogItem?.id === app.id) $('dialog-feedback').textContent = error.message; } }
   });
   for (const id of ['search', 'region', 'opportunity']) $(id).addEventListener('input', render);
   $('catalogue')?.addEventListener('change', render);
@@ -383,6 +400,7 @@
   $('application-dialog').addEventListener('cancel', event => { if (sending) event.preventDefault(); });
   $('send-mail')?.addEventListener('click', async () => {
     if (!dialogItem) return;
+    if (!dossierReady(dialogItem)) { $('dialog-feedback').textContent = 'Prépare le CV ciblé et la lettre avant de pouvoir envoyer.'; return; }
     if (dialogItem.status === 'applied') { $('send-mail').disabled = true; $('send-mail').textContent = 'Déjà postulée'; $('dialog-feedback').textContent = 'Cette candidature est déjà marquée Postulé. Vérifie le précédent envoi ; aucun renvoi automatique.'; return; }
     if (!auth) {
       $('dialog-feedback').textContent = 'Connecte-toi à ton suivi pour envoyer la candidature.';
