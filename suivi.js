@@ -2,7 +2,7 @@
 (() => {
   const localPage = typeof location !== 'undefined' && (location.protocol === 'file:' || ['localhost', '127.0.0.1'].includes(location.hostname));
   const integrated = document.documentElement?.dataset?.integratedTracker === 'true';
-  const API = integrated ? location.origin + '/api/tracker' : localPage ? 'http://127.0.0.1:5517/api/tracker' : 'https://pos-job-assistant.onrender.com/api/tracker';
+  const API = integrated ? location.origin + '/api/tracker' : localPage ? 'http://127.0.0.1:5518/api/tracker' : 'https://pos-job-assistant.onrender.com/api/tracker';
   if (document.getElementById('discover-jobs')) document.getElementById('discover-jobs').href = integrated ? '/offres' : localPage ? 'http://127.0.0.1:5518/offres' : 'https://pos-job-assistant.onrender.com/offres';
   const CACHE = 'jordan-tracker-cache-v2', OUTBOX = 'jordan-tracker-outbox-v2', AUTH = 'jordan-tracker-session-v2';
   const $ = id => document.getElementById(id);
@@ -40,6 +40,9 @@
   function button(text, action, id, className) { const b = node('button', className, text); b.type = 'button'; b.dataset.action = action; b.dataset.id = id; return b; }
   function link(text, url) { const a = node('a', '', text); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer'; return a; }
   function normalize(s) { return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(); }
+  function opportunityKind(app) { return /initiativbewerbung|candidature spontan|unsolicited application/i.test(app.role || '') ? 'initiative' : app.opportunityType; }
+  function queueGroup(app) { return app.status === 'archived' ? 2 : opportunityKind(app) === 'open-role' ? 0 : opportunityKind(app) === 'initiative' ? 1 : 2; }
+  function arrival(app) { return app.addedAt || app.createdAt || ''; }
   function notify(text) { clearTimeout(feedbackTimer); $('feedback').textContent = text; $('feedback').hidden = false; feedbackTimer = setTimeout(() => { $('feedback').hidden = true; }, 5500); }
   function persist() {
     try { localStorage.setItem(CACHE, JSON.stringify({ version: 2, applications })); localStorage.setItem(OUTBOX, JSON.stringify(outbox)); }
@@ -83,7 +86,7 @@
     const article = node('article', 'card'); article.dataset.id = app.id;
     const info = node('div'); const title = node('h3', '', app.company); title.id = 'title-' + app.id; article.setAttribute('aria-labelledby', title.id); info.append(title, node('p', 'role', app.role));
     if (app.location) info.append(node('p', 'meta', app.location));
-    const badge = app.opportunityType === 'open-role' ? 'Offre publiée' : app.opportunityType === 'initiative' ? 'Candidature spontanée' : app.historical ? 'Ancien dossier' : 'Dossier existant';
+    const badge = opportunityKind(app) === 'open-role' ? 'Offre publiée' : opportunityKind(app) === 'initiative' ? 'Candidature spontanée' : app.historical ? 'Ancien dossier' : 'Dossier existant';
     info.append(node('span', 'badge' + (app.historical ? ' historical' : ''), badge));
     {
       const match = app.compatibility || { score: null, reasons: [], warnings: ['Le score sera disponible après synchronisation avec le suivi à jour.'] };
@@ -121,13 +124,21 @@
     const q = normalize($('search').value), region = $('region').value, type = $('opportunity').value;
     const catalogue = $('catalogue')?.value || 'all';
     const selected = applications.filter(a => catalogue === 'all' || (catalogue === 'new' ? a.id.startsWith('job-') : !a.id.startsWith('job-')));
-    const visible = selected.filter(a => (!q || normalize([a.company, a.role, a.location, a.sector].join(' ')).includes(q)) && (!region || a.region === region || region === 'school' && a.schoolList || region === 'Historique' && a.historical) && (!type || type === 'historical' ? !type || a.historical : a.opportunityType === type));
+    const visible = selected.filter(a => (!q || normalize([a.company, a.role, a.location, a.sector].join(' ')).includes(q)) && (!region || a.region === region || region === 'school' && a.schoolList || region === 'Historique' && a.historical) && (!type || (type === 'historical' ? a.historical : opportunityKind(a) === type)));
     const groups = { sent: visible.filter(a => a.status === 'applied'), pending: visible.filter(a => a.status !== 'applied') };
     groups.sent.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || '') || a.company.localeCompare(b.company));
-    const rank = $('rank-sort')?.value === 'compatibility';
-    groups.pending.sort((a, b) => (rank ? (b.compatibility?.score ?? -1) - (a.compatibility?.score ?? -1) : 0) || (b.addedAt || b.verifiedAt || '').localeCompare(a.addedAt || a.verifiedAt || '') || a.company.localeCompare(b.company));
+    groups.pending.sort((a, b) => queueGroup(a) - queueGroup(b) || (queueGroup(a) === 0 ? (b.compatibility?.score ?? -1) - (a.compatibility?.score ?? -1) : 0) || arrival(b).localeCompare(arrival(a)) || a.company.localeCompare(b.company));
     for (const [name, list] of Object.entries(groups)) {
-      $('' + name + '-list').replaceChildren(...list.map(card));
+      const content = []; let previousGroup = -1;
+      for (const app of list) {
+        const group = queueGroup(app);
+        if (name === 'pending' && group !== previousGroup) {
+          const headings = ['Offres publiées · par compatibilité CV','Candidatures spontanées · plus récentes d’abord','Autres dossiers conservés'];
+          content.push(node('h3', 'queue-heading', headings[group])); previousGroup = group;
+        }
+        content.push(card(app));
+      }
+      $('' + name + '-list').replaceChildren(...content);
       if (!list.length) $(name + '-list').append(node('p', 'empty', applications.length ? 'Aucune candidature dans cette liste avec ces filtres.' : 'Connecte-toi pour charger tes entreprises et tes documents.'));
       $(name + '-count').textContent = list.length; $(name + '-total').textContent = selected.filter(a => name === 'sent' ? a.status === 'applied' : a.status !== 'applied').length;
     }
