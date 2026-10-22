@@ -11,6 +11,8 @@
   const read = (store, key, fallback) => { try { return JSON.parse(store.getItem(key)) || fallback; } catch { return fallback; } };
   const VIEW = 'jordan-tracker-hide-applied-v1';
   let hideApplied = read(localStorage, VIEW, false) === true;
+  const ARCHIVE_VIEW = 'jordan-tracker-show-archived-v1';
+  let hideArchived = read(localStorage, ARCHIVE_VIEW, false) !== true;
   let applications = initial.map(a => ({ ...a, status: a.status || (a.sentAt ? 'applied' : 'pending'), revision: a.revision || 0 }));
   const cached = read(localStorage, CACHE, { applications: [] });
   applications = [...new Map([...applications, ...(Array.isArray(cached.applications) ? cached.applications : [])].map(a => [a.id, a])).values()];
@@ -43,6 +45,7 @@
   function opportunityKind(app) { return /initiativbewerbung|candidature spontan|unsolicited application/i.test(app.role || '') ? 'initiative' : app.opportunityType; }
   function queueGroup(app) { return app.status === 'archived' ? 2 : opportunityKind(app) === 'open-role' ? 0 : opportunityKind(app) === 'initiative' ? 1 : 2; }
   function arrival(app) { return app.addedAt || app.createdAt || ''; }
+  function statusGroup(app) { return app.status === 'applied' ? 'sent' : app.status === 'archived' ? 'archived' : 'pending'; }
   function companyKey(app) {
     const key = normalize(app.company).replace(/ß/g, 'ss').replace(/&/g, ' ').replace(/\b(und|gmbh|ag|kg|co|kgaa|se|ug|mbh|inc|ltd|limited|holding|haftungsbeschrankt)\b/g, '').replace(/[^a-z0-9]/g, '');
     return !key || /^(?:employeuraverifier|unbekannt|unknown)$/.test(key) ? 'unknown:' + app.id : key;
@@ -58,7 +61,7 @@
   }
   function companyCatalogue() {
     const choices = new Map();
-    const priority = (a,b) => Number(a.status === 'applied') - Number(b.status === 'applied') || Number(a.status !== 'archived') - Number(b.status !== 'archived') || (a.compatibility?.score ?? -1) - (b.compatibility?.score ?? -1) || arrival(a).localeCompare(arrival(b)) || b.id.localeCompare(a.id);
+    const priority = (a,b) => Number(a.status === 'applied') - Number(b.status === 'applied') || Number(a.status === 'archived') - Number(b.status === 'archived') || (a.compatibility?.score ?? -1) - (b.compatibility?.score ?? -1) || arrival(a).localeCompare(arrival(b)) || b.id.localeCompare(a.id);
     for (const app of applications) {
       if (!eligible(app)) continue;
       const key = companyKey(app), previous = choices.get(key);
@@ -124,7 +127,7 @@
     if (app.status === 'applied') info.append(node('p', 'meta', app.sentAt ? 'Postulée le ' + dateFormat.format(new Date(app.sentAt + 'T12:00:00')) : 'Déjà postulée · date non renseignée'));
     if (app.status === 'unknown') info.append(node('p', 'meta', 'Envoi à confirmer'));
     if (app.preparationMethod === 'profile-template') info.append(node('p', 'meta', 'CV et lettre préparés localement à partir de ton profil et de l’annonce. Version structurée à relire avant envoi.'));
-    if (app.status === 'archived') info.append(node('p', 'meta', 'Archivée · conservée dans le suivi'));
+    if (app.status === 'archived') info.append(node('p', 'meta', 'Écartée / archivée · hors des candidatures à envoyer'));
     if (app.note) info.append(node('p', 'note', app.note));
     if (app.addedAt || app.verifiedAt) info.append(node('p', 'meta', 'Ajout / vérification : ' + (app.verifiedAt || app.addedAt)));
     const docs = docButtons(app); if (docs.childElementCount) info.append(docs);
@@ -134,12 +137,19 @@
     if (app.sourceUrl) sources.append(link(app.sourceLabel || 'Source', app.sourceUrl));
     if (Array.isArray(app.sourceUrls)) app.sourceUrls.slice(0, 2).filter(u => u !== app.url).forEach((u, i) => sources.append(link('Source officielle ' + (i + 1), u)));
     if (sources.childElementCount) info.append(sources);
-    const actions = node('div', 'actions'); actions.append(button('Préparer l’e-mail', 'prepare', app.id));
+    const actions = node('div', 'actions');
+    if (app.status !== 'archived') actions.append(button('Préparer l’e-mail', 'prepare', app.id));
     if (app.status !== 'applied' && app.status !== 'archived' && !dossierReady(app) && app.jobAssistantId) actions.append(button('Préparer CV + lettre', 'prepare-documents', app.id, 'primary'));
-    const assistant = link('Aide au formulaire', (integrated ? location.origin : localPage ? 'http://127.0.0.1:5518' : 'https://pos-job-assistant.onrender.com') + '/dossier/' + encodeURIComponent(app.id)); assistant.className = 'button'; actions.append(assistant);
+    if (app.status !== 'archived') {
+      const assistant = link('Aide au formulaire', (integrated ? location.origin : localPage ? 'http://127.0.0.1:5518' : 'https://pos-job-assistant.onrender.com') + '/dossier/' + encodeURIComponent(app.id)); assistant.className = 'button'; actions.append(assistant);
+    }
     if (app.status === 'applied') actions.append(button('Remettre à postuler', 'state:pending', app.id, 'undo'));
-    else { actions.append(button('Marquer un envoi fait ailleurs', 'state:applied', app.id)); if (app.status === 'unknown' || app.status === 'archived') actions.append(button('À postuler', 'state:pending', app.id)); }
-    if (app.status !== 'archived') actions.append(button('Archiver', 'state:archived', app.id, 'undo'));
+    else if (app.status === 'archived') actions.append(button('Remettre à postuler', 'state:pending', app.id));
+    else {
+      actions.append(button('Marquer un envoi fait ailleurs', 'state:applied', app.id));
+      if (app.status === 'unknown') actions.append(button('À postuler', 'state:pending', app.id));
+      actions.append(button('Je ne peux pas postuler', 'state:archived', app.id, 'undo'));
+    }
     if (outbox[app.id]) info.append(node('p', 'meta', 'Changement en attente de synchronisation.'));
     article.append(info, actions); return article;
   }
@@ -147,13 +157,17 @@
     $('sent-section').hidden = hideApplied;
     $('toggle-applied').setAttribute('title', hideApplied ? 'Afficher les postulées' : 'Masquer les postulées');
     $('toggle-applied').setAttribute('aria-expanded', String(!hideApplied));
+    $('archived-section').hidden = hideArchived;
+    $('toggle-archived').setAttribute('title', hideArchived ? 'Afficher les écartées / archivées' : 'Masquer les écartées / archivées');
+    $('toggle-archived').setAttribute('aria-expanded', String(!hideArchived));
     const q = normalize($('search').value), region = $('region').value, type = $('opportunity').value;
     const catalogue = $('catalogue')?.value || 'all';
     const selected = companyCatalogue().filter(a => catalogue === 'all' || (catalogue === 'new' ? a.id.startsWith('job-') : !a.id.startsWith('job-')));
     const visible = selected.filter(a => (!q || normalize([a.company, a.role, a.location, a.sector].join(' ')).includes(q)) && (!region || a.region === region || region === 'school' && a.schoolList || region === 'Historique' && a.historical) && (!type || (type === 'historical' ? a.historical : opportunityKind(a) === type)));
-    const groups = { sent: visible.filter(a => a.status === 'applied'), pending: visible.filter(a => a.status !== 'applied') };
+    const groups = { sent: visible.filter(a => statusGroup(a) === 'sent'), pending: visible.filter(a => statusGroup(a) === 'pending'), archived: visible.filter(a => statusGroup(a) === 'archived') };
     groups.sent.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || '') || a.company.localeCompare(b.company));
     groups.pending.sort((a, b) => queueGroup(a) - queueGroup(b) || (queueGroup(a) === 0 ? (b.compatibility?.score ?? -1) - (a.compatibility?.score ?? -1) : 0) || arrival(b).localeCompare(arrival(a)) || a.company.localeCompare(b.company));
+    groups.archived.sort((a, b) => (b.updatedAt || arrival(b)).localeCompare(a.updatedAt || arrival(a)) || a.company.localeCompare(b.company));
     for (const [name, list] of Object.entries(groups)) {
       const content = []; let previousGroup = -1;
       for (const app of list) {
@@ -166,10 +180,10 @@
       }
       $('' + name + '-list').replaceChildren(...content);
       if (!list.length) $(name + '-list').append(node('p', 'empty', applications.length ? 'Aucune candidature dans cette liste avec ces filtres.' : 'Connecte-toi pour charger tes entreprises et tes documents.'));
-      $(name + '-count').textContent = list.length; $(name + '-total').textContent = selected.filter(a => name === 'sent' ? a.status === 'applied' : a.status !== 'applied').length;
+      $(name + '-count').textContent = list.length; $(name + '-total').textContent = selected.filter(a => statusGroup(a) === name).length;
     }
     $('overview').textContent = applications.length ? new Set(selected.map(a => normalize(a.company))).size + ' entreprises · ' + selected.length + ' fiches affichées · ' + applications.length + ' fiches conservées au total' : 'Ton suivi apparaît après connexion.';
-    if (!applications.length) for (const name of ['sent', 'pending']) { $(name + '-count').textContent = '—'; $(name + '-total').textContent = '—'; }
+    if (!applications.length) for (const name of ['sent', 'pending', 'archived']) { $(name + '-count').textContent = '—'; $(name + '-total').textContent = '—'; }
     syncLabel();
   }
   async function request(path = '', options = {}) {
@@ -237,13 +251,14 @@
   }
   async function changeState(app, status) {
     if (outbox[app.id] && busy) { notify('Cette fiche est en cours de sauvegarde.'); return; }
-    const nextId = status === 'applied' ? nextPendingId(app.id) : null;
+    const leavesPending = status === 'applied' || status === 'archived';
+    const nextId = leavesPending ? nextPendingId(app.id) : null;
     const sentAt = status === 'applied' ? app.status === 'unknown' ? null : today() : null;
     outbox[app.id] = { status, sentAt, revision: outbox[app.id]?.revision ?? app.revision ?? 0 };
     Object.assign(app, { status, sentAt }); persist(); render();
     notify(online ? 'Enregistrement du statut…' : 'Statut conservé sur cet appareil ; connexion nécessaire pour le synchroniser.');
     await synchronize();
-    if (status === 'applied' && applications.find(a => a.id === app.id)?.status === 'applied') continuePending(nextId);
+    if (leavesPending && applications.find(a => a.id === app.id)?.status === status) continuePending(nextId);
     if (online && !outbox[app.id]) notify('Statut enregistré sur le serveur.');
   }
   function nextPendingId(id) {
@@ -418,6 +433,12 @@
     hideApplied = !hideApplied;
     try { localStorage.setItem(VIEW, JSON.stringify(hideApplied)); } catch {}
     render();
+  });
+  $('toggle-archived').addEventListener('click', () => {
+    hideArchived = !hideArchived;
+    try { localStorage.setItem(ARCHIVE_VIEW, JSON.stringify(!hideArchived)); } catch {}
+    render();
+    if (!hideArchived) $('archived-section').scrollIntoView({ block: 'start' });
   });
   $('connect').addEventListener('click', () => { if (auth) { auth = ''; online = false; sessionStorage.removeItem(AUTH); syncLabel(); } else { $('login-form').hidden = !$('login-form').hidden; if (!$('login-form').hidden) $('password').focus(); } });
   $('login-form').addEventListener('submit', async event => { event.preventDefault(); auth = 'Basic ' + btoa(unescape(encodeURIComponent($('username').value.trim() + ':' + $('password').value))); try { sessionStorage.setItem(AUTH, JSON.stringify(auth)); } catch {} $('password').value = ''; await synchronize(); });
