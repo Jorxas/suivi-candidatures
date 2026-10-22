@@ -48,10 +48,12 @@
     return !key || /^(?:employeuraverifier|unbekannt|unknown)$/.test(key) ? 'unknown:' + app.id : key;
   }
   function eligible(app) {
+    if (app.opportunityType === 'out-of-scope') return false;
     const title = normalize(app.role);
     if (/\b(senior|sr\.?|lead|principal|head of|leiter|leitung)\b/.test(title)) return false;
-    const tech = /\bit\b|informatik|software|webentwickl|programmier|\bdata\b|daten|cloud|\bki\b|cyber|security|digital|devops|backend|frontend|full.?stack|netzwerk|embedded|\bux\b|\bui\b|glasfaser|elektrotechnik|systemfuhrung|\bgrc\b/.test(title);
-    if (!tech && /personalentwicklung|human resources|\bhr\b|steuerberatung|umsatzsteuer|wirtschaftspruf|immobilien|sprachdozent|\bverkauf\b|content creator|social media|gestaltung und design|produktionsmanagement|\blogistik\b|\blogistics\b|kommunikation.*kultur/.test(title)) return false;
+    if (/ausbildung|auszubild|\bazubi|duales studium|\bfos\b|fachoberschul|\bschulerpraktik|\bschulpraktik|praktik[^\n]{0,20}\bschuler\b/.test(title)) return false;
+    const tech = /\bit\b|informatik|software|webentwickl|programmier|\bdata\b|daten|cloud|\bki\b|\bai\b|\bsap\b|\berp\b|\bcrm\b|cyber|security|digital|devops|backend|frontend|full.?stack|netzwerk|embedded|\bux\b|\bui\b|glasfaser|elektrotechnik|systemfuhrung|\bgrc\b/.test(title);
+    if (!tech && /personalentwicklung|human resources|\bhr\b|steuerberatung|umsatzsteuer|wirtschaftspruf|immobilien|sprachdozent|\bverkauf\b|content creator|social media|gestaltung und design|produktionsmanagement|\blogistik\b|\blogistics\b|kommunikation.*kultur|lieferfahr|restaurant|gastronom|\bbooking\b|artist management|weg.verwal|group communications|motion design|finanzen|controlling|konzernentwicklung|online.marketing|\bmarketing\b|talentmanagement|mitarbeiterbindung|strassenbahngleisbau|workplace.*people|investment intern|konstruktion|produktionsentwicklung|kraftfahrzeug/.test(title)) return false;
     return opportunityKind(app) === 'initiative' || /werkstud|working student|student trainee|praktik|prakt\.|internship|\bintern\b|\bstage\b/.test(title);
   }
   function companyCatalogue() {
