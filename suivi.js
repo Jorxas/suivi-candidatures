@@ -18,6 +18,7 @@
   applications = [...new Map([...applications, ...(Array.isArray(cached.applications) ? cached.applications : [])].map(a => [a.id, a])).values()];
   let outbox = read(localStorage, OUTBOX, {}), auth = integrated ? '@browser' : read(sessionStorage, AUTH, ''), online = false, busy = false, dialogItem = null, sharedFiles = [], feedbackTimer;
   let selectedKinds = new Set(), sending = false, selectionVersion = 0;
+  const downloadingDossiers = new Set();
   const ATTACHMENTS = 'jordan-attachment-preferences-v1';
   const attachmentPreferences = read(localStorage, ATTACHMENTS, {});
   let recipientEdited = false, preloadingContacts = false;
@@ -106,6 +107,7 @@
   function dossierReady(app) { const docs = documents(app); return docs.some(d => d.kind === 'bundle') || docs.some(d => d.kind === 'cv' && !d.isGeneral) && docs.some(d => d.kind === 'letter'); }
   function docButtons(app) {
     const box = node('div', 'links');
+    if (documents(app).length) box.append(button('Tout télécharger (.zip)', 'download-all', app.id, 'primary'));
     for (const d of documents(app)) box.append(button(d.kind === 'cv' && d.isGeneral ? 'CV général (PDF)' : labels[d.kind] || d.kind, 'document:' + d.kind, app.id));
     return box;
   }
@@ -296,6 +298,46 @@
     if (!auth) throw new Error('Connecte-toi pour télécharger les documents depuis ton téléphone.');
     const file = await getDocument(app, kind); downloadBlob(file, file.name);
   }
+  function safeArchiveName(value, fallback) {
+    const name = Array.from(String(value || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().replace(/[. ]+$/g, '')).slice(0, 120).join('');
+    return !name || /^\.+$/.test(name) ? fallback : /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name) ? '_' + name : name;
+  }
+  function dossierZip(entries) {
+    // ZIP STORE keeps the original PDF bytes, with UTF-8 paths and a central directory.
+    const localParts = [], centralParts = [], encoder = new TextEncoder(); let offset = 0;
+    for (const entry of entries) {
+      const name = encoder.encode(entry.name), bytes = entry.bytes;
+      let crc = 0xffffffff;
+      for (const byte of bytes) { crc ^= byte; for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0); }
+      crc = (crc ^ 0xffffffff) >>> 0;
+      const local = new Uint8Array(30), l = new DataView(local.buffer);
+      l.setUint32(0, 0x04034b50, true); l.setUint16(4, 20, true); l.setUint16(6, 0x800, true); l.setUint16(12, 33, true);
+      l.setUint32(14, crc, true); l.setUint32(18, bytes.length, true); l.setUint32(22, bytes.length, true); l.setUint16(26, name.length, true);
+      const central = new Uint8Array(46), c = new DataView(central.buffer);
+      c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x800, true); c.setUint16(14, 33, true);
+      c.setUint32(16, crc, true); c.setUint32(20, bytes.length, true); c.setUint32(24, bytes.length, true); c.setUint16(28, name.length, true); c.setUint32(42, offset, true);
+      localParts.push(local, name, bytes); centralParts.push(central, name); offset += local.length + name.length + bytes.length;
+    }
+    const centralLength = centralParts.reduce((sum, part) => sum + part.length, 0), end = new Uint8Array(22), e = new DataView(end.buffer);
+    e.setUint32(0, 0x06054b50, true); e.setUint16(8, entries.length, true); e.setUint16(10, entries.length, true); e.setUint32(12, centralLength, true); e.setUint32(16, offset, true);
+    return new Blob([...localParts, ...centralParts, end], { type: 'application/zip' });
+  }
+  async function downloadDossier(app) {
+    if (!auth) throw new Error('Connecte-toi pour télécharger le dossier complet.');
+    const docs = documents(app); if (!docs.length) throw new Error('Aucun document disponible pour cette candidature.');
+    const folder = safeArchiveName(app.company, 'Bewerbung'), names = new Set();
+    const files = await Promise.all(docs.map(doc => getDocument(app, doc.kind)));
+    const entries = [];
+    for (let index = 0; index < files.length; index++) {
+      const bytes = new Uint8Array(await files[index].arrayBuffer());
+      if (new TextDecoder().decode(bytes.slice(0, 5)) !== '%PDF-') throw new Error('Un document n’est pas un PDF valide. Le dossier n’a pas été téléchargé.');
+      const base = safeArchiveName(files[index].name, docs[index].kind + '.pdf'); let name = base, number = 1;
+      while (names.has(name.toLowerCase())) name = base.replace(/(\.pdf)?$/i, '_' + (++number) + '$1');
+      names.add(name.toLowerCase()); entries.push({ name: folder + '/' + name, bytes });
+    }
+    downloadBlob(dossierZip(entries), folder + '.zip');
+    notify(files.length + ' document(s) téléchargé(s) dans ' + folder + '.zip. Décompresse-le pour retrouver les PDF.');
+  }
   function emailDraft(app) {
     const rawBody = app.mailBody || 'Sehr geehrte Damen und Herren,\n\nich bewerbe mich initiativ bei ' + app.company + ' als Werkstudent oder Praktikant im Bereich Softwareentwicklung / IT. Ich studiere Bachelor Informatik an der Technischen Hochschule Mittelhessen in Gießen. In meinen Projekten arbeite ich mit Next.js, TypeScript, Java, REST-Schnittstellen und Datenbanken.\n\nIm Anhang finden Sie meinen Lebenslauf. Über eine Rückmeldung und ein Kennenlernen freue ich mich.\n\nMit freundlichen Grüßen\nJordan Freddy';
     return { subject: app.mailSubject || 'Initiativbewerbung als Werkstudent / Praktikant Softwareentwicklung / IT – Jordan Freddy', body: cleanMailText(rawBody) };
@@ -313,6 +355,7 @@
   }
   function renderAttachmentSelection(app) {
     const box = node('div', 'attachment-selection');
+    if (documents(app).length) { const all = button('Tout télécharger (.zip)', 'download-all', app.id); all.disabled = sending; box.append(all); }
     const labels = { cv: 'CV', letter: 'Anschreiben', transcript: 'Leistungsübersicht', enrollment: 'Studienbescheinigung', bundle: 'Dossier PDF complet' };
     for (const doc of documents(app)) {
       const included = selectedKinds.has(doc.kind);
@@ -415,7 +458,11 @@
     const b = event.target.closest('button[data-action]'); if (!b) return;
     const app = applications.find(a => a.id === b.dataset.id); if (!app) return;
     try {
-      if (b.dataset.action === 'prepare-documents') {
+      if (b.dataset.action === 'download-all') {
+        if (downloadingDossiers.has(app.id)) return;
+        downloadingDossiers.add(app.id); b.disabled = true; const label = b.textContent; b.textContent = 'Téléchargement du dossier…';
+        try { await downloadDossier(app); } finally { downloadingDossiers.delete(app.id); b.disabled = false; b.textContent = label; }
+      } else if (b.dataset.action === 'prepare-documents') {
         b.disabled = true; b.textContent = 'Préparation du CV et de la lettre…'; notify('Préparation du dossier personnalisé en cours. Aucun envoi de mail.');
         const response = await request('/' + encodeURIComponent(app.id) + '/prepare', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(240000) });
         const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Préparation indisponible. Réessaie depuis le dossier.');
