@@ -52,13 +52,14 @@
     return !key || /^(?:employeuraverifier|unbekannt|unknown)$/.test(key) ? 'unknown:' + app.id : key;
   }
   function eligible(app) {
+    if (app.status === 'applied' || app.status === 'archived') return true;
     if (app.opportunityType === 'out-of-scope') return false;
     const title = normalize(app.role);
     if (/\b(senior|sr\.?|lead|principal|head of|leiter|leitung)\b/.test(title)) return false;
     if (/ausbildung|auszubild|\bazubi|duales studium|\bfos\b|fachoberschul|\bschulerpraktik|\bschulpraktik|praktik[^\n]{0,20}\bschuler\b/.test(title)) return false;
-    const tech = /\bit\b|informatik|software|webentwickl|programmier|\bdata\b|daten|cloud|\bki\b|\bai\b|\bsap\b|\berp\b|\bcrm\b|cyber|security|digital|devops|backend|frontend|full.?stack|netzwerk|embedded|\bux\b|\bui\b|glasfaser|elektrotechnik|systemfuhrung|\bgrc\b/.test(title);
+    const tech = /\bit\b|informatik|software|webentwickl|programmier|\bdata\b|daten|cloud|\bki\b|\bai\b|\bsap\b|\berp\b|\bcrm\b|cyber|security|digital|devops|backend|frontend|full.?stack|netzwerk|embedded|\bux\b|\bui\b|glasfaser|elektrotechnik|systemfuhrung|\bgrc\b|machine learning|computer vision/.test(title);
     if (!tech && /personalentwicklung|human resources|\bhr\b|steuerberatung|umsatzsteuer|wirtschaftspruf|immobilien|sprachdozent|\bverkauf\b|content creator|social media|gestaltung und design|produktionsmanagement|\blogistik\b|\blogistics\b|kommunikation.*kultur|lieferfahr|restaurant|gastronom|\bbooking\b|artist management|weg.verwal|group communications|motion design|finanzen|controlling|konzernentwicklung|online.marketing|\bmarketing\b|talentmanagement|mitarbeiterbindung|strassenbahngleisbau|workplace.*people|investment intern|konstruktion|produktionsentwicklung|kraftfahrzeug/.test(title)) return false;
-    return opportunityKind(app) === 'initiative' || /werkstud|working student|student trainee|praktik|prakt\.|internship|\bintern\b|\bstage\b/.test(title);
+    return opportunityKind(app) === 'initiative' || /werkstud|working student|student trainee|praktik|prakt\.|internship|\bintern\b|\bstage\b|abschlussarbeit|bachelorarbeit|masterarbeit/.test(title);
   }
   function companyCatalogue() {
     const choices = new Map();
@@ -134,7 +135,13 @@
     if (app.addedAt || app.verifiedAt) info.append(node('p', 'meta', 'Ajout / vérification : ' + (app.verifiedAt || app.addedAt)));
     const docs = docButtons(app); if (docs.childElementCount) info.append(docs);
     if (!documents(app).some(d => d.kind === 'letter')) info.append(node('p', 'meta', 'Lettre adaptée à préparer. CV général disponible après connexion.'));
-    const sources = node('div', 'links'); if (app.email) sources.append(link(app.email, 'mailto:' + app.email));
+    const sources = node('div', 'links');
+    if (app.email) {
+      const prefix = app.applicationChannel === 'portal-only' || app.contactPurpose === 'questions' ? 'Contact (questions) : ' : app.emailKind === 'general' ? 'Contact général : ' : '';
+      sources.append(link(prefix + app.email, 'mailto:' + app.email));
+      if (app.emailSource && /^https?:/.test(app.emailSource)) sources.append(link('Source du contact ↗', app.emailSource));
+    }
+    if (app.contactMessage) info.append(node('p', 'meta', app.contactMessage));
     if (app.url) sources.append(link(app.opportunityType === 'initiative' ? 'Site / carrière ↗' : 'Annonce / formulaire ↗', app.url));
     if (app.sourceUrl) sources.append(link(app.sourceLabel || 'Source', app.sourceUrl));
     if (Array.isArray(app.sourceUrls)) app.sourceUrls.slice(0, 2).filter(u => u !== app.url).forEach((u, i) => sources.append(link('Source officielle ' + (i + 1), u)));
@@ -326,17 +333,27 @@
     if (!auth) throw new Error('Connecte-toi pour télécharger le dossier complet.');
     const docs = documents(app); if (!docs.length) throw new Error('Aucun document disponible pour cette candidature.');
     const folder = safeArchiveName(app.company, 'Bewerbung'), names = new Set();
-    const files = await Promise.all(docs.map(doc => getDocument(app, doc.kind)));
+    const files = [];
+    for (const doc of docs) {
+      try {
+        const file = await getDocument(app, doc.kind);
+        files.push({ file, kind: doc.kind });
+      } catch (err) {
+        console.warn('Document non récupéré pour le zip:', doc.kind, err);
+      }
+    }
+    if (!files.length) throw new Error('Document indisponible. Connecte-toi ou actualise le suivi.');
     const entries = [];
-    for (let index = 0; index < files.length; index++) {
-      const bytes = new Uint8Array(await files[index].arrayBuffer());
-      if (new TextDecoder().decode(bytes.slice(0, 5)) !== '%PDF-') throw new Error('Un document n’est pas un PDF valide. Le dossier n’a pas été téléchargé.');
-      const base = safeArchiveName(files[index].name, docs[index].kind + '.pdf'); let name = base, number = 1;
-      while (names.has(name.toLowerCase())) name = base.replace(/(\.pdf)?$/i, '_' + (++number) + '$1');
+    for (const item of files) {
+      const bytes = new Uint8Array(await item.file.arrayBuffer());
+      if (new TextDecoder().decode(bytes.slice(0, 5)) !== '%PDF-') continue;
+      const base = safeArchiveName(item.file.name, item.kind + '.pdf'); let name = base, number = 1;
+      while (names.has(name.toLowerCase())) name = base.replace(/(\.[^.]+)?$/i, '_' + (++number) + '$1');
       names.add(name.toLowerCase()); entries.push({ name: folder + '/' + name, bytes });
     }
+    if (!entries.length) throw new Error('Aucun PDF valide n’a pu être inclus dans le dossier.');
     downloadBlob(dossierZip(entries), folder + '.zip');
-    notify(files.length + ' document(s) téléchargé(s) dans ' + folder + '.zip. Décompresse-le pour retrouver les PDF.');
+    notify(entries.length + ' document(s) téléchargé(s) dans ' + folder + '.zip. Décompresse-le pour retrouver les PDF.');
   }
   function emailDraft(app) {
     const rawBody = app.mailBody || 'Sehr geehrte Damen und Herren,\n\nich bewerbe mich initiativ bei ' + app.company + ' als Werkstudent oder Praktikant im Bereich Softwareentwicklung / IT. Ich studiere Bachelor Informatik an der Technischen Hochschule Mittelhessen in Gießen. In meinen Projekten arbeite ich mit Next.js, TypeScript, Java, REST-Schnittstellen und Datenbanken.\n\nIm Anhang finden Sie meinen Lebenslauf. Über eine Rückmeldung und ein Kennenlernen freue ich mich.\n\nMit freundlichen Grüßen\nJordan Freddy';
@@ -408,7 +425,9 @@
       }
       $('contact-suggestions').hidden = false;
     }
-    if (app.url) { const a = link(app.email ? 'Voir aussi le site / formulaire ↗' : 'Ouvrir le site / formulaire pour postuler ↗', app.url); a.className = 'button'; $('portal-action').append(a); }
+    const applicationUrl = app.applicationChannel === 'portal-only' && app.contactPortalUrl || app.url;
+    if (applicationUrl) { const a = link(app.email ? 'Voir aussi le site / formulaire ↗' : 'Ouvrir le site / formulaire pour postuler ↗', applicationUrl); a.className = 'button'; $('portal-action').append(a); }
+    if (app.contactMessage) $('portal-action').append(node('p', 'meta', app.contactMessage));
     $('portal-action').append(node('p', 'meta', 'Ouvrir cet aperçu ou le site ne transmet rien. Seul le bouton « Envoyer la candidature (Gmail) » envoie cet e-mail et enregistre le statut Postulé.'));
     $('dialog-feedback').textContent = app.status === 'applied' ? 'Déjà marquée Postulé' + (app.sentAt ? ' le ' + dateFormat.format(new Date(app.sentAt + 'T12:00:00')) : '') + '. Aucun renvoi proposé. Si ce statut est incorrect, utilise « Remettre à postuler » sur la fiche.' : '';
     if ($('send-mail')) { $('send-mail').disabled = app.status === 'applied'; $('send-mail').textContent = app.status === 'applied' ? 'Déjà postulée' : '🚀 Envoyer la candidature (Gmail)'; }
@@ -417,7 +436,7 @@
       $('dialog-feedback').textContent = 'Dossier incomplet : prépare le CV ciblé et la lettre de motivation avant l’envoi.';
       if (app.jobAssistantId) $('portal-action').append(button('Préparer CV + lettre', 'prepare-documents', app.id, 'primary'));
     }
-    if (app.applicationChannel === 'portal-only') {
+    if (app.applicationChannel === 'portal-only' || app.contactPurpose === 'questions') {
       $('send-mail').disabled = true; $('send-mail').textContent = 'Candidater via le formulaire';
       $('dialog-feedback').textContent = 'Cet employeur utilise un formulaire officiel. Ouvre le lien ci-dessus et utilise les documents du dossier.';
     }
@@ -432,7 +451,11 @@
             if (dialogItem?.id === app.id) {
               if (data.candidates && data.candidates.length) {
                 if (!recipientEdited && !$('mail-to').value) $('mail-to').value = data.candidates[0].email;
-                Object.assign(app, { email: app.email || data.candidates[0].email, contactCandidates: data.candidates, contactCheckedAt: data.checkedAt, contactStatus: data.outcome }); persist(); render();
+                Object.assign(app, { email: app.email || data.candidates[0].email, emailSource: data.candidates[0].sourceUrl, emailKind: data.candidates[0].kind, contactCandidates: data.candidates, contactCheckedAt: data.checkedAt, contactStatus: data.outcome, contactMessage: data.message, contactPortalUrl: data.portalUrl, ...(data.applicationChannel ? { applicationChannel: data.applicationChannel } : {}), ...(data.contactPurpose ? { contactPurpose: data.contactPurpose } : {}) }); persist(); render();
+                if (app.applicationChannel === 'portal-only' || app.contactPurpose === 'questions') {
+                  $('send-mail').disabled = true; $('send-mail').textContent = 'Candidater via le formulaire';
+                  if (app.contactPortalUrl) { const portal = $('portal-action').querySelector('a'); if (portal) portal.href = app.contactPortalUrl; }
+                }
                 if ($('contact-suggestions')) {
                   $('contact-suggestions').replaceChildren();
                   for (const cand of data.candidates) {
