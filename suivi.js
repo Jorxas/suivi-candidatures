@@ -142,6 +142,19 @@
       if (app.emailSource && /^https?:/.test(app.emailSource)) sources.append(link('Source du contact ↗', app.emailSource));
     }
     if (app.contactMessage) info.append(node('p', 'meta', app.contactMessage));
+    if (Array.isArray(app.emailApplicationEvidence) && app.emailApplicationEvidence.length) {
+      const proofEmails = [...new Set(app.emailApplicationEvidence.map(proof => proof.email).filter(Boolean))];
+      const specificOnly = app.emailApplicationEvidence.every(proof => proof.scope === 'posting');
+      info.append(node('p', 'meta', (specificOnly ? 'E-mail publié pour une annonce précise (à vérifier) : ' : 'E-mail de candidature publié : ') + proofEmails.join(' · ')));
+      const evidence = node('details', 'compatibility email-application-evidence'); evidence.append(node('summary', '', 'Candidature par e-mail : preuve publiée'));
+      if (app.applicationChannel === 'portal-only') evidence.append(node('p', 'meta', 'Pour cette fiche, le formulaire reste demandé. Les preuves ci-dessous concernent uniquement les conditions citées.'));
+      for (const proof of app.emailApplicationEvidence) {
+        if (!proof.email || !/^https?:\/\//.test(proof.sourceUrl || '')) continue;
+        evidence.append(node('p', 'meta', proof.email), node('p', 'meta', proof.note), node('blockquote', '', proof.excerpt), link('Vérifier les conditions sur le site ↗', proof.sourceUrl));
+        if (proof.checkedAt && Number.isFinite(Date.parse(proof.checkedAt))) evidence.append(node('p', 'meta', 'Vérifié le ' + dateFormat.format(new Date(proof.checkedAt))));
+      }
+      info.append(evidence);
+    }
     if (app.url) sources.append(link(app.opportunityType === 'initiative' ? 'Site / carrière ↗' : 'Annonce / formulaire ↗', app.url));
     if (app.sourceUrl) sources.append(link(app.sourceLabel || 'Source', app.sourceUrl));
     if (Array.isArray(app.sourceUrls)) app.sourceUrls.slice(0, 2).filter(u => u !== app.url).forEach((u, i) => sources.append(link('Source officielle ' + (i + 1), u)));
@@ -171,7 +184,14 @@
     $('toggle-archived').setAttribute('aria-expanded', String(!hideArchived));
     const q = normalize($('search').value), region = $('region').value, type = $('opportunity').value;
     const catalogue = $('catalogue')?.value || 'all';
-    const selected = companyCatalogue().filter(a => catalogue === 'all' || (catalogue === 'new' ? a.id.startsWith('job-') : !a.id.startsWith('job-')));
+    const selected = companyCatalogue().filter(a => {
+      if (catalogue === 'all') return true;
+      const evidence = Array.isArray(a.emailApplicationEvidence) ? a.emailApplicationEvidence : [];
+      const generalEmail = evidence.some(proof => proof.scope === 'initiative' || proof.scope === 'company');
+      if (catalogue === 'email-confirmed') return generalEmail;
+      if (catalogue === 'email-posting') return evidence.length > 0 && !generalEmail;
+      return catalogue === 'new' ? a.id.startsWith('job-') : !a.id.startsWith('job-');
+    });
     const visible = selected.filter(a => (!q || normalize([a.company, a.role, a.location, a.sector].join(' ')).includes(q)) && (!region || a.region === region || region === 'school' && a.schoolList || region === 'Historique' && a.historical) && (!type || (type === 'historical' ? a.historical : opportunityKind(a) === type)));
     const groups = { sent: visible.filter(a => statusGroup(a) === 'sent'), pending: visible.filter(a => statusGroup(a) === 'pending'), archived: visible.filter(a => statusGroup(a) === 'archived') };
     groups.sent.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || '') || a.company.localeCompare(b.company));
